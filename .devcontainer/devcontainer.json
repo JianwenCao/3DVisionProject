@@ -9,10 +9,14 @@
       "--net=host",
       "-e", "DISPLAY=${env:DISPLAY}",
       "-e", "QT_X11_NO_MITSHM=1",
-      "-e", "XAUTHORITY=/tmp/.docker.xauth",
       "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
-      "-v", "/tmp/.docker.xauth:/tmp/.docker.xauth:rw",
-      // "--device=/dev/dri:/dev/dri"
+      "--device=/dev/dri:/dev/dri", // for hosts with non-NVIDIA GPUs
+
+      // For hosts with NVIDIA GPUs (still debugging):
+      // "--runtime=nvidia",
+      // "--gpus=all",
+      // "-e", "NVIDIA_DRIVER_CAPABILITIES=graphics",
+      // "-e", "NVIDIA_VISIBLE_DEVICES=all"
     ],
   
     "customizations": {
