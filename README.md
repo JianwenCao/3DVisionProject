@@ -36,16 +36,20 @@ catkin init
 
 ---
 
-### 5. Pre-Build **Sophus** Inside the Container
+### 5. Initialize the submodules
+Github has not resolved the various packages we are using (FAST-LIVO2, livox_ros_dirver, etc.).
+```bash
+git submodule update --init --recursive
+```
+
+### 6. Pre-Build **Sophus** Inside the Container
 
 > **Why?**  
 > If you **skip** this step, `catkin build` will fail to find `Sophus` when building `rpg_vikit`.
-
-Run the following inside the container:
+Both Sophus and rpg_vikit are NOT git submodules. They are baked into our project in a way that they will compile. Run the following inside the container:
 
 ```bash
 cd src/Sophus
-git checkout a621ff
 mkdir build && cd build
 cmake ..
 make
@@ -54,14 +58,14 @@ sudo make install
 
 ---
 
-### 6. Build **FAST-LIVO2**
+### 7. Build **FAST-LIVO2**
 
 ```bash
 cd /catkin_ws && . /opt/ros/noetic/setup.bash
 catkin build
 ```
 
-### 7. Test **FAST-LIVO2** 
+### 8. Test **FAST-LIVO2** 
 
 > **Warning: There is a known issue where RViz may fail to launch.  
 > Still trying to debug and need help!**
