@@ -17,6 +17,8 @@
       // "--gpus=all",
       // "-e", "NVIDIA_DRIVER_CAPABILITIES=graphics",
       // "-e", "NVIDIA_VISIBLE_DEVICES=all"
+
+      "-e", "LD_LIBRARY_PATH=/catkin_ws/devel/lib:/usr/local/lib" // find Sophus library
     ],
   
     "customizations": {

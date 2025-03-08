@@ -58,7 +58,7 @@ sudo make install
 
 ---
 
-### 7. Build **FAST-LIVO2**
+### 7. Build All Packages
 
 ```bash
 cd /catkin_ws && . /opt/ros/noetic/setup.bash
@@ -67,19 +67,17 @@ catkin build
 
 ### 8. Test **FAST-LIVO2** 
 
-> **Warning: There is a known issue where RViz may fail to launch.  
-> Still trying to debug and need help!**
-
 **Launch**
 ```bash
+# Terminal 1
+. /opt/ros/noetic/setup.bash
+roscore
+
+# Terminal 2
 . /devel/setup.bash
 roslaunch fast_livo mapping_avia.launch
+
+# Terminal 3
 rosbag play PATH/TO/YOUR_DOWNLOADED.bag
 ```
-
-**Error Output:**
-```bash
-devuser@docker-desktop:/catkin_ws$ rviz
-qt.qpa.xcb: could not connect to display :0
-qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
 
