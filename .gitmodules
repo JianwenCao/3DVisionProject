@@ -1,6 +1,0 @@
-[submodule "src/3DV-FAST-LIVO2"]
-	path = src/3DV-FAST-LIVO2
-	url = https://github.com/elliotirving/3DV-FAST-LIVO2.git
-[submodule "src/livox_ros_driver"]
-	path = src/livox_ros_driver
-	url = https://github.com/Livox-SDK/livox_ros_driver.git

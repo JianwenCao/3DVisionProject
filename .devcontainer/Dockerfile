@@ -24,11 +24,22 @@ RUN apt-get update && apt-get install -y \
     libpcl-dev \
     libceres-dev \
     ros-noetic-pcl-ros \
+    ros-noetic-sophus \
     sudo && \
     rm -rf /var/lib/apt/lists/*
 
+# Create a Non-root User matching your host (optional but recommended)
+ARG USERNAME=devuser
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN apt-get update && \
+    apt-get install -y sudo && \
+    groupadd --gid $USER_GID $USERNAME && \
+    useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
 # Port forwading
-RUN apt-get update && apt-get install -y x11-xserver-utils xauth libxcb-xinerama0 libx11-xcb1 libglu1-mesa
+# RUN apt-get update && apt-get install -y x11-xserver-utils xauth libxcb-xinerama0 libx11-xcb1 libglu1-mesa
 
 # -------------------------------
 # Build Livox SDK from Source
@@ -41,17 +52,26 @@ RUN git clone https://github.com/Livox-SDK/Livox-SDK.git && \
     make -j$(nproc) && \
     sudo make install
 
-# Create a Non-root User matching your host (optional but recommended)
-ARG USERNAME=devuser
-ARG USER_UID=1000
-ARG USER_GID=1000
-RUN apt-get update && \
-    apt-get install -y sudo && \
-    groupadd --gid $USER_GID $USERNAME && \
-    useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
-    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# -------------------------------
+# Build and install Sophus for rpg_vikit
+# (non-templated/double-only version)
+# Build with patch
+# -------------------------------
+USER root
+WORKDIR /tmp
+COPY thirdparty/sophus.patch /tmp/
+RUN git clone https://github.com/strasdat/Sophus.git && \
+    cd Sophus && \
+    git checkout a621ff && \
+    git apply /tmp/sophus.patch && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig
+USER devuser
 
-# Switch to your new user by default
+# Switch to devuser by default
 USER $USERNAME
 WORKDIR /home/$USERNAME
 
