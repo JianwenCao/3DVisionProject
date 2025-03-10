@@ -1,9 +1,0 @@
-rpg_vikit/vikit_common
-/catkin_ws/devel/.private/vikit_common/cmake.lock /catkin_ws/devel/./cmake.lock
-/catkin_ws/devel/.private/vikit_common/lib/libvikit_common.so /catkin_ws/devel/lib/libvikit_common.so
-/catkin_ws/devel/.private/vikit_common/lib/vikit_common/test_vk_common_camera /catkin_ws/devel/lib/vikit_common/test_vk_common_camera
-/catkin_ws/devel/.private/vikit_common/lib/vikit_common/test_vk_common_patch_score /catkin_ws/devel/lib/vikit_common/test_vk_common_patch_score
-/catkin_ws/devel/.private/vikit_common/lib/vikit_common/test_vk_common_triangulation /catkin_ws/devel/lib/vikit_common/test_vk_common_triangulation
-/catkin_ws/devel/.private/vikit_common/lib/pkgconfig/vikit_common.pc /catkin_ws/devel/lib/pkgconfig/vikit_common.pc
-/catkin_ws/devel/.private/vikit_common/share/vikit_common/cmake/vikit_commonConfig.cmake /catkin_ws/devel/share/vikit_common/cmake/vikit_commonConfig.cmake
-/catkin_ws/devel/.private/vikit_common/share/vikit_common/cmake/vikit_commonConfig-version.cmake /catkin_ws/devel/share/vikit_common/cmake/vikit_commonConfig-version.cmake

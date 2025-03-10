@@ -1,5 +1,12 @@
 # 3D Vision Project - ETH 2025
 
+## Dockerized Environment
+- ROS Noetic Base: osrf/ros:noetic-desktop-full (Ubuntu 20.04).
+- Preinstalled Dependencies: ROS libraries, OpenCV, Eigen, PCL, Ceres, and Python tools.
+- Non-root User: devuser
+- Livox SDK
+- Sophus (Patched): Applies a custom patch and builds the non-templated/double-only version for rpg_vikit.
+
 ## Installation Instructions
 
 ### 1. Open the Project Directory
@@ -34,38 +41,16 @@ Then, initialize `catkin`:
 catkin init
 ```
 
----
-
-### 5. Initialize the submodules
-Github has not resolved the various packages we are using (FAST-LIVO2, livox_ros_dirver, etc.).
-```bash
-git submodule update --init --recursive
-```
-
-### 6. Pre-Build **Sophus** Inside the Container
-
-> **Why?**  
-> If you **skip** this step, `catkin build` will fail to find `Sophus` when building `rpg_vikit`.
-Both Sophus and rpg_vikit are NOT git submodules. They are baked into our project in a way that they will compile. Run the following inside the container:
-
-```bash
-cd src/Sophus
-mkdir build && cd build
-cmake ..
-make
-sudo make install
-```
-
----
-
-### 7. Build All Packages
+### 5. Build All Packages
 
 ```bash
 cd /catkin_ws && . /opt/ros/noetic/setup.bash
 catkin build
 ```
 
-### 8. Test **FAST-LIVO2** 
+---
+
+### 6. Test **FAST-LIVO2** 
 
 **Launch**
 ```bash
@@ -78,6 +63,6 @@ roscore
 roslaunch fast_livo mapping_avia.launch
 
 # Terminal 3
-rosbag play PATH/TO/YOUR_DOWNLOADED.bag
+rosbag play ~/dataset_fastlivo2/YOUR_FILE.bag
 ```
 
