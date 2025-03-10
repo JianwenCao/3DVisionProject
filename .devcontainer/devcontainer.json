@@ -12,13 +12,11 @@
       "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
       "--device=/dev/dri:/dev/dri", // for hosts with non-NVIDIA GPUs
 
-      // For hosts with NVIDIA GPUs (still debugging):
+      // For hosts with NVIDIA GPUs (still debugging, not yet working):
       // "--runtime=nvidia",
       // "--gpus=all",
       // "-e", "NVIDIA_DRIVER_CAPABILITIES=graphics",
       // "-e", "NVIDIA_VISIBLE_DEVICES=all"
-
-      // "-e", "LD_LIBRARY_PATH=/catkin_ws/devel/lib:/usr/local/lib" // find Sophus library
     ],
   
     "customizations": {
