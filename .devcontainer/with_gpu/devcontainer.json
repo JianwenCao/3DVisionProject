@@ -1,5 +1,5 @@
 {
-    "name": "3DV DevContainer",
+    "name": "With GPU",
     "dockerFile": "Dockerfile",
     "context": "..",
     "workspaceMount": "source=${localWorkspaceFolder},target=/catkin_ws,type=bind,consistency=cached",
