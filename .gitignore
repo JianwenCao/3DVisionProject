@@ -2,4 +2,4 @@ build/
 devel/
 logs/
 src/Sophus/build/
-.catkin_tools/profiles/
+.catkin_tools/profiles/default
