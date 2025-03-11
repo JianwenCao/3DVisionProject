@@ -75,4 +75,6 @@ USER devuser
 USER $USERNAME
 WORKDIR /home/$USERNAME
 
+RUN echo "source /opt/ros/noetic/setup.bash" >> /home/$USERNAME/.bashrc
+
 CMD ["/bin/bash"]

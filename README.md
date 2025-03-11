@@ -58,7 +58,6 @@ catkin build
 **Launch**
 ```bash
 # Terminal 1
-. /opt/ros/noetic/setup.bash
 roscore
 
 # Terminal 2
