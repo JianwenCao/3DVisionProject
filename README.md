@@ -37,14 +37,17 @@ devuser@docker-desktop:/catkin_ws$
 
 Then, initialize `catkin`:
 
+
+### 5. Build All Packages
+```bash
+. /opt/ros/noetic/setup.bash
+```
+
 ```bash
 catkin init
 ```
 
-### 5. Build All Packages
-
 ```bash
-cd /catkin_ws && . /opt/ros/noetic/setup.bash
 catkin build
 ```
 
@@ -59,7 +62,7 @@ catkin build
 roscore
 
 # Terminal 2
-. /devel/setup.bash
+. devel/setup.bash
 roslaunch fast_livo mapping_avia.launch
 
 # Terminal 3
