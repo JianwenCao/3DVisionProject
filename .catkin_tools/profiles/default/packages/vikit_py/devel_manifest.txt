@@ -1,0 +1,6 @@
+rpg_vikit/vikit_py
+/catkin_ws/devel/.private/vikit_py/cmake.lock /catkin_ws/devel/./cmake.lock
+/catkin_ws/devel/.private/vikit_py/lib/pkgconfig/vikit_py.pc /catkin_ws/devel/lib/pkgconfig/vikit_py.pc
+/catkin_ws/devel/.private/vikit_py/lib/python3/dist-packages/vikit_py/__init__.py /catkin_ws/devel/lib/python3/dist-packages/vikit_py/__init__.py
+/catkin_ws/devel/.private/vikit_py/share/vikit_py/cmake/vikit_pyConfig.cmake /catkin_ws/devel/share/vikit_py/cmake/vikit_pyConfig.cmake
+/catkin_ws/devel/.private/vikit_py/share/vikit_py/cmake/vikit_pyConfig-version.cmake /catkin_ws/devel/share/vikit_py/cmake/vikit_pyConfig-version.cmake
