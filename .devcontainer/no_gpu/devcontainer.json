@@ -1,7 +1,7 @@
 {
     "name": "No GPU",
     "dockerFile": "Dockerfile",
-    "context": "..",
+    "context": "../..",
     "workspaceMount": "source=${localWorkspaceFolder},target=/catkin_ws,type=bind,consistency=cached",
     "workspaceFolder": "/catkin_ws",
   

@@ -1,7 +1,7 @@
 {
     "name": "With GPU",
     "dockerFile": "Dockerfile",
-    "context": "..",
+    "context": "../..",
     "workspaceMount": "source=${localWorkspaceFolder},target=/catkin_ws,type=bind,consistency=cached",
     "workspaceFolder": "/catkin_ws",
   
@@ -10,7 +10,7 @@
       "-e", "DISPLAY=${env:DISPLAY}",
       "-e", "QT_X11_NO_MITSHM=1",
       "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
-      "--device=/dev/dri:/dev/dri", // for hosts with non-NVIDIA GPUs
+      "--device=/dev/dri:/dev/dri" // for hosts with non-NVIDIA GPUs
 
       // For hosts with NVIDIA GPUs (still debugging, not yet working):
       // "--runtime=nvidia",
