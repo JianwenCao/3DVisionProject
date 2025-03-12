@@ -73,13 +73,23 @@ roslaunch fast_livo mapping_avia.launch
 rosbag play ~/dataset_fastlivo2/YOUR_FILE.bag
 ```
 
---- 
-Testing MacOS commands:
+### Mac host:
+On MacOS host machine:
 ```bash
-sudo netstat -tulpn | grep 590
-tigervncserver -kill :1
-tigervncserver :1 -geometry 1280x800 -depth 24 -xstartup /usr/bin/xterm
+brew install docker
+brew install colima
+# Test Docker
+docker run hello-world
+Clone/open 3DV project
+chmod +x .devcontainer/macOS/entrypoint.sh
 ```
-
-Mac host:
-brew install --cask tigervnc-viewer
+Reopen in **MacOS 3DV** devcontainer.
+```bash
+catkin init
+catkin build
+```
+To open Rviz and ros in your host browser:
+```bash
+/entrypoint.sh
+```
+Go to http://localhost:8080/vnc.html?host=localhost&port=8080 on your browser. You will see a Terminator emulator where you can interact with the container.

@@ -1,6 +1,0 @@
-rpg_vikit/vikit_ros
-/catkin_ws/devel/.private/vikit_ros/cmake.lock /catkin_ws/devel/./cmake.lock
-/catkin_ws/devel/.private/vikit_ros/lib/libvikit_ros.so /catkin_ws/devel/lib/libvikit_ros.so
-/catkin_ws/devel/.private/vikit_ros/lib/pkgconfig/vikit_ros.pc /catkin_ws/devel/lib/pkgconfig/vikit_ros.pc
-/catkin_ws/devel/.private/vikit_ros/share/vikit_ros/cmake/vikit_rosConfig-version.cmake /catkin_ws/devel/share/vikit_ros/cmake/vikit_rosConfig-version.cmake
-/catkin_ws/devel/.private/vikit_ros/share/vikit_ros/cmake/vikit_rosConfig.cmake /catkin_ws/devel/share/vikit_ros/cmake/vikit_rosConfig.cmake
