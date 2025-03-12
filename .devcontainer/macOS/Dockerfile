@@ -38,8 +38,11 @@ RUN apt-get update && apt-get install -y \
     libeigen3-dev \
     libpcl-dev \
     libceres-dev \
-    ros-noetic-rviz \
     ros-noetic-pcl-ros \
+    ros-noetic-sophus \
+    ros-noetic-cv-bridge \
+    ros-noetic-image-transport \
+    ros-noetic-eigen-conversions \
     # VNC / GUI
     tigervnc-standalone-server \
     gnome-flashback \

@@ -11,7 +11,12 @@
             "settings": {
                 "terminal.integrated.shell.linux": "/bin/bash",
                 "terminal.integrated.defaultProfile.linux": "bash"
-            }
+            },
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-python.python",
+                "twxs.cmake"
+                ]
         }
     }
 }

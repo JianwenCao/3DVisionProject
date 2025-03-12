@@ -80,13 +80,16 @@ brew install docker
 brew install colima
 # Test Docker
 docker run hello-world
-Clone/open 3DV project
+```
+Clone and open 3DV project
+```bash
+git clone git@github.com:JianwenCao/3DVisionProject.git
 chmod +x .devcontainer/macOS/entrypoint.sh
 ```
-Reopen in **MacOS 3DV** devcontainer.
+Reopen in **MacOS 3DV** devcontainer and build (with reduced load)
 ```bash
 catkin init
-catkin build
+catkin build --jobs 1
 ```
 To open Rviz and ros in your host browser:
 ```bash
