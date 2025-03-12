@@ -72,3 +72,14 @@ roslaunch fast_livo mapping_avia.launch
 # Terminal 3
 rosbag play ~/dataset_fastlivo2/YOUR_FILE.bag
 ```
+
+--- 
+Testing MacOS commands:
+```bash
+sudo netstat -tulpn | grep 590
+tigervncserver -kill :1
+tigervncserver :1 -geometry 1280x800 -depth 24 -xstartup /usr/bin/xterm
+```
+
+Mac host:
+brew install --cask tigervnc-viewer
