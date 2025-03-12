@@ -1,5 +1,11 @@
 # 3D Vision Project - ETH 2025
 
+## Prerequisites
+### Install Docker Engine
+> Warning! Docker Desktop not recommended, you will run into issues running GUI apps in container and visualizing on host.
+- Ensure [Docker Engine](https://docs.docker.com/engine/install/) (CLI version) is installed.
+
+
 ## Dockerized Environment
 - ROS Noetic Base: osrf/ros:noetic-desktop-full (Ubuntu 20.04).
 - Preinstalled Dependencies: ROS libraries, OpenCV, Eigen, PCL, Ceres, and Python tools.
@@ -10,9 +16,10 @@
 ## Installation Instructions
 
 ### 1. Open the Project Directory
-On your **host machine**, navigate to the project directory:
+On your **host machine**, clone the repository and navigate to the project directory:
 
 ```bash
+git clone https://github.com/JianwenCao/3DVisionProject.git
 cd 3DVisionProject/
 ```
 
@@ -26,7 +33,7 @@ Move your downloaded `.bag` files into the following directory **on your host ma
 > **Note:** This folder will be **mounted** and accessible inside the container.
 
 ### 3. Open the DevContainer
-- Reopen `3DVisionProject/` in the **DevContainer** (this will trigger the `.devcontainer/` Dockerfile build process).
+- Reopen `3DVisionProject/` in **DevContainer**. Select **With GPU** or **No GPU**. If this is a new, unbuilt container, the `devcontainer.json + Dockerfile` pair will be built.
 
 ### 4. Initialize Catkin Workspace
 Once inside the container, open a new terminal (**bash**) and ensure you are in:
@@ -65,4 +72,3 @@ roslaunch fast_livo mapping_avia.launch
 # Terminal 3
 rosbag play ~/dataset_fastlivo2/YOUR_FILE.bag
 ```
-

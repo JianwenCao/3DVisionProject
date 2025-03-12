@@ -1,53 +1,15 @@
 {
-  "name": "3DV DevContainer",
-  "dockerFile": "Dockerfile",
-  "context": "..",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/catkin_ws,type=bind,consistency=cached",
-  "workspaceFolder": "/catkin_ws",
-
-  // "runArgs": [
-  //   "--net=host",
-  //   "-e", "DISPLAY=${env:DISPLAY}",
-  //   "-e", "QT_X11_NO_MITSHM=1",
-  //   "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw"
-  // ],
+    "name": "ROS Noetic with VNC (Local Only)",
+    "build": {
+      "dockerfile": "Dockerfile",
+      // Set build context if needed (e.g. to the repository root)
+      "context": ".."
+    },
+    // Bind container port 5901 to localhost ONLY:
+    "runArgs": [
+      "-p", "127.0.0.1:5901:5901"
+    ],
+    // Use our devuser as the default for VS Code
+    "remoteUser": "devuser"
+  }
   
-  "runArgs": [
-    "--net=host",
-    "--cap-add=SYS_PTRACE",
-    "--security-opt", "seccomp=unconfined",
-    "-e", "DISPLAY=host.docker.internal:0",
-    "-e", "QT_X11_NO_MITSHM=1",
-    "-e", "LIBGL_DEBUG=verbose",
-    "-e", "OGRE_RTT_MODE=Copy",
-    "-e", "OGRE_GL_VERSION=2.1",
-    "-e", "LIBGL_NO_SW=1",  // Disable Mesa software rendering
-    "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw"
-  ],
-
-  "customizations": {
-    "vscode": {
-      "settings": {
-        "terminal.integrated.profiles.linux": {
-          "bash": {
-            "path": "/bin/bash"
-          }
-        },
-        "terminal.integrated.defaultProfile.linux": "bash"
-      },
-      "extensions": [
-        "ms-vscode.cpptools",
-        "ms-python.python",
-        "twxs.cmake"
-      ]
-    }
-  },
-
-  "mounts": [
-    "source=${env:HOME}/dataset_fastlivo2,target=/home/devuser/dataset_fastlivo2,type=bind,consistency=cached"
-  ],
-
-  "postCreateCommand": "sudo chown -R devuser:devuser /catkin_ws",
-
-  "remoteUser": "devuser"
-}
