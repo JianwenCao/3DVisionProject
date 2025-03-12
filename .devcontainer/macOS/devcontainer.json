@@ -6,8 +6,12 @@
     "runArgs": [
         "--privileged"
     ],
-    "settings": {
-        "terminal.integrated.shell.linux": "/bin/bash",
-        "terminal.integrated.defaultProfile.linux": "bash"
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.shell.linux": "/bin/bash",
+                "terminal.integrated.defaultProfile.linux": "bash"
+            }
+        }
     }
 }
