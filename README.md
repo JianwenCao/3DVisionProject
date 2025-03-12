@@ -36,12 +36,6 @@ Move your downloaded `.bag` files into the following directory **on your host ma
 - Reopen `3DVisionProject/` in **DevContainer**. Select **With GPU** or **No GPU**. If this is a new, unbuilt container, the `devcontainer.json + Dockerfile` pair will be built.
 
 ### 4. Initialize Catkin Workspace
-Once inside the container, open a new terminal (**bash**) and ensure you are in:
-
-```bash
-devuser@docker-desktop:/catkin_ws$
-```
-
 Then, initialize `catkin`:
 
 ```bash
@@ -49,24 +43,20 @@ catkin init
 ```
 
 ### 5. Build All Packages
-
 ```bash
-cd /catkin_ws && . /opt/ros/noetic/setup.bash
 catkin build
 ```
 
 ---
 
 ### 6. Test **FAST-LIVO2** 
-
 **Launch**
 ```bash
 # Terminal 1
-. /opt/ros/noetic/setup.bash
 roscore
 
 # Terminal 2
-. /devel/setup.bash
+. devel/setup.bash
 roslaunch fast_livo mapping_avia.launch
 
 # Terminal 3
