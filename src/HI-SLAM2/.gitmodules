@@ -1,0 +1,12 @@
+[submodule "thirdparty/lietorch"]
+	path = thirdparty/lietorch
+	url = https://github.com/princeton-vl/lietorch
+[submodule "thirdparty/eigen"]
+	path = thirdparty/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "thirdparty/simple-knn"]
+	path = thirdparty/simple-knn
+	url = https://gitlab.inria.fr/bkerbl/simple-knn.git
+[submodule "thirdparty/diff-gaussian-rasterization/third_party/glm"]
+	path = thirdparty/diff-gaussian-rasterization/third_party/glm
+	url = https://github.com/g-truc/glm.git

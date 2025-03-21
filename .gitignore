@@ -3,3 +3,10 @@ devel/
 logs/
 src/Sophus/build/
 .catkin_tools/profiles/default
+
+
+# HI-SLAM2 specific
+src/HI-SLAM2/thirdparty
+src/HI-SLAM2/pretrained_models/omnidata_dpt_normal_v2.ckpt
+src/HI-SLAM2/pretrained_models/omnidata_dpt_depth_v2.ckpt
+src/HI-SLAM2/data

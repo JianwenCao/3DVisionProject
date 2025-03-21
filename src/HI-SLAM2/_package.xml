@@ -1,0 +1,19 @@
+<package format="2">
+  <name>hislam2</name>
+  <version>0.0.1</version>
+  <description>HI-SLAM2 integrated as a ROS package</description>
+  <license>MIT</license>
+  <maintainer email="eirving@student.ethz.ch">Your Name</maintainer>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>rospy</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>ros_numpy</build_depend>
+
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>ros_numpy</exec_depend>
+</package>

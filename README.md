@@ -62,3 +62,49 @@ roslaunch fast_livo mapping_avia.launch
 # Terminal 3
 rosbag play ~/dataset_fastlivo2/YOUR_FILE.bag
 ```
+
+
+## HI-SLAM2 in ROS environment:
+- Build `HISLAM2 With GPU` devcontainer
+- Postcreatecommand runs `setup.py` automatically, installing CUDA extensions.
+> Warning: the postcreatecommand takes a long time, if you rebuild the container instead of reopen, this long step will take a while.
+### Activate HI-SLAM2 Conda Environment:
+>Same as HI-SLAM2 instructions
+```bash
+act_hi2
+cd src/HI-SLAM2
+wget https://zenodo.org/records/10447888/files/omnidata_dpt_normal_v2.ckpt -P pretrained_models
+wget https://zenodo.org/records/10447888/files/omnidata_dpt_depth_v2.ckpt -P pretrained_models
+bash scripts/download_replica.sh
+python scripts/preprocess_replica.py
+```
+Run demo:
+```bash
+python demo.py \
+--imagedir data/Replica/room0/colors \
+--calib calib/replica.txt \
+--config config/replica_config.yaml \
+--output outputs/room0 \
+--gsvis \
+--droidvis
+```
+
+### Let FAST-LIVO2 communicate with HI-SLAM2 (with bridge)
+Container publishes ROS message to 
+```bash
+# Terminal 1
+roslaunch rosbridge_server rosbridge_websocket.launch port:=9091
+# Terminal 2:
+act_hi2
+cd /catkin_ws/src/HI-SLAM2
+python ros_to_hislam2.py
+# Terminal 3:
+rosbag play path/to/dataset.bag
+```
+
+<!-- Run ros listener version:
+python demo_ros.py \
+--imagedir data/Replica/room0/colors \
+--calib calib/replica.txt \
+--config config/replica_config.yaml \
+--output outputs/room0 -->
