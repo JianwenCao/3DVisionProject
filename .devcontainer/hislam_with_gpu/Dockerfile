@@ -66,42 +66,35 @@ RUN apt-get update && \
     useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
     echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# # -------------------------------
-# # Build Livox SDK from Source
-# # -------------------------------
-# WORKDIR /opt
-# RUN git clone https://github.com/Livox-SDK/Livox-SDK.git && \
-#     cd Livox-SDK && \
-#     mkdir -p build && cd build && \
-#     cmake .. && \
-#     make -j$(nproc) && \
-#     sudo make install
+# -------------------------------
+# Build Livox SDK from Source
+# -------------------------------
+WORKDIR /opt
+RUN git clone https://github.com/Livox-SDK/Livox-SDK.git && \
+    cd Livox-SDK && \
+    mkdir -p build && cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    sudo make install
 
-# # -------------------------------
-# # Build and install Sophus for rpg_vikit
-# # (non-templated/double-only version)
-# # Build with patch
-# # -------------------------------
-# USER root
-# WORKDIR /tmp
-# COPY thirdparty/sophus.patch /tmp/
-# RUN git clone https://github.com/strasdat/Sophus.git && \
-#     cd Sophus && \
-#     git checkout a621ff && \
-#     git apply /tmp/sophus.patch && \
-#     mkdir build && cd build && \
-#     cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local && \
-#     make -j$(nproc) && \
-#     make install && \
-#     ldconfig
-# USER devuser
-
-# Switch to devuser by default
-USER $USERNAME
-WORKDIR /home/$USERNAME
-
-RUN echo "source /opt/ros/noetic/setup.bash" >> /home/$USERNAME/.bashrc
-
+# -------------------------------
+# Build and install Sophus for rpg_vikit
+# (non-templated/double-only version)
+# Build with patch
+# -------------------------------
+USER root
+WORKDIR /tmp
+COPY thirdparty/sophus.patch /tmp/
+RUN git clone https://github.com/strasdat/Sophus.git && \
+    cd Sophus && \
+    git checkout a621ff && \
+    git apply /tmp/sophus.patch && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig
+USER devuser
 
 # -------------------------------
 # Install Miniconda and Set Up HI-SLAM2 Environment
@@ -124,5 +117,9 @@ RUN echo 'if [ -f "/home/devuser/miniconda/etc/profile.d/conda.sh" ]; then' >> /
     echo '    alias activate_conda="source /home/devuser/miniconda/etc/profile.d/conda.sh && conda activate"' >> /home/$USERNAME/.bashrc && \
     echo 'fi' >> /home/$USERNAME/.bashrc
 
+# Switch to devuser by default
+USER $USERNAME
+WORKDIR /home/$USERNAME
+RUN echo "source /opt/ros/noetic/setup.bash" >> /home/$USERNAME/.bashrc
 
 CMD ["/bin/bash"]

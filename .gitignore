@@ -1,8 +1,9 @@
-build/
-devel/
-logs/
-src/Sophus/build/
+build
+devel
+logs
+src/Sophus/build
 .catkin_tools/profiles/default
+.vscode
 
 
 # HI-SLAM2 specific

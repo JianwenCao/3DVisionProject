@@ -90,21 +90,21 @@ python demo.py \
 ```
 
 ### Let FAST-LIVO2 communicate with HI-SLAM2 (with bridge)
-Container publishes ROS message to 
+Container publishes ROS message on localhost and forwards websocket to 9090 (example). HISLAM2BridgeClient listens to websocket, parses, and stores data in torch tensors.
 ```bash
 # Terminal 1
-roslaunch rosbridge_server rosbridge_websocket.launch port:=9091
-# Terminal 2:
+roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
+
+# Terminal 2: Decode ROS msgs and sync sensors
 act_hi2
 cd /catkin_ws/src/HI-SLAM2
-python ros_to_hislam2.py
+python scripts/run_ros_conversions.py 
+            [-h] [--mode {online,preprocess}]   # Online for real-time pipeline, preprocess (save frames to folder)
+            [--ros-host ROS_HOST]               # default 'localhost'
+            [--ros-port ROS_PORT]               # default 9090
+            [--output-name OUTPUT_NAME]         # folder NAME, data saved in Hi_SLAM2/data/<output-name>
+            [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+
 # Terminal 3:
 rosbag play path/to/dataset.bag
 ```
-
-<!-- Run ros listener version:
-python demo_ros.py \
---imagedir data/Replica/room0/colors \
---calib calib/replica.txt \
---config config/replica_config.yaml \
---output outputs/room0 -->
