@@ -255,41 +255,6 @@ class HISLAM2Data:
         with self.lock:
             self.lidar_data[stamp] = points
 
-    def pop_sequential_data(self):
-        """
-        Sequentially pop the earliest data from each sensor's storage,
-        assuming the sensor streams are nearly synchronized.
-        
-        Returns:
-          (sync_time, camera_tensor, pose_tensor, lidar_tensor) or None if one
-          or more sensor buffers are empty.
-        """
-        with self.lock:
-            if not (self.camera_data and self.pose_data and self.lidar_data):
-                logger.debug("One or more sensor dictionaries are empty.")
-                return None
-            
-            logger.info(f"Queue sizes: camera {image_queue.qsize()}, pose {pose_queue.qsize()}, lidar {lidar_queue.qsize()}")
-
-            # Sort keys and pop the earliest from each.
-            cam_keys = sorted(self.camera_data.keys())
-            pose_keys = sorted(self.pose_data.keys())
-            lidar_keys = sorted(self.lidar_data.keys())
-
-            cam_time = cam_keys[0]
-            pose_time = pose_keys[0]
-            lidar_time = lidar_keys[0]
-
-            cam = self.camera_data.pop(cam_time)
-            pose = self.pose_data.pop(pose_time)
-            lidar = self.lidar_data.pop(lidar_time)
-
-            # Compute a simple average timestamp for reference.
-            sync_time = (cam_time + pose_time + lidar_time) / 3.0
-            logger.info(f"Popped sequential data: camera {cam_time:.9f}, "
-                        f"pose {pose_time:.9f}, lidar {lidar_time:.9f}; sync_time = {sync_time:.9f}")
-            return sync_time, cam, pose, lidar
-
     def pop_synced_data(self, tolerance=0.1):
         """
         For each camera frame (in order of arrival), find the LiDAR and pose frames 
@@ -365,7 +330,6 @@ def sync_thread(data_store, exposure_time=0.0, tolerance=0.1):
     If a synchronized package is found, put it into the sync_queue.
     """
     while True:
-        # synced = data_store.pop_sequential_data()
         synced = data_store.pop_synced_data(tolerance=tolerance)
         if synced is not None:
             sync_queue.put(synced)
