@@ -370,9 +370,9 @@ def preprocess_data(data_store, output_dir):
             frame_folder = os.path.join(output_dir, f"frame{index}")
             os.makedirs(frame_folder, exist_ok=True)
             
-            # --- Save Camera Image ---
+            # --- Save Image ---
             try:
-                # Assume cam is a torch tensor with shape (C, H, W) in RGB.
+                # Torch tensor has shape (C, H, W) in RGB.
                 # Convert to (H, W, C) and then to uint8.
                 img_np = cam.cpu().permute(1, 2, 0).numpy().astype(np.uint8)
                 # Convert from RGB to BGR for OpenCV.
@@ -382,7 +382,7 @@ def preprocess_data(data_store, output_dir):
             except Exception as e:
                 print("Error saving image:", e)
             
-            # --- Save Lidar Points ---
+            # --- Save Lidar ---
             try:
                 # Convert lidar (torch tensor) to a NumPy array.
                 points = lidar.cpu().numpy()
