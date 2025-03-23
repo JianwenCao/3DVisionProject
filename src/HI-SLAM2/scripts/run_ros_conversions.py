@@ -37,7 +37,7 @@ sync_queue = queue.Queue()
 # ----------------------------
 def decode_ros_image(msg):
     """
-    Decode a ROS Image message (as a dict) into an RGB NumPy array.
+    Decode a ROS Image message from base64 into an RGB NumPy array.
     Handles raw image data for common encodings such as 'rgb8', 'bgr8', or 'mono8'.
     If the encoding is not one of these, falls back to cv2.imdecode.
     """
@@ -47,7 +47,6 @@ def decode_ros_image(msg):
         width = int(msg.get('width', 0))
         if height == 0 or width == 0:
             raise ValueError("Invalid image dimensions")
-        # Decode the raw data from base64.
         img_data = base64.b64decode(msg.get('data', ''))
         if encoding in ['rgb8', 'bgr8', 'mono8']:
             channels = 3 if encoding in ['rgb8', 'bgr8'] else 1
@@ -62,8 +61,8 @@ def decode_ros_image(msg):
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
             return img
         else:
-            np_arr = np.frombuffer(img_data, dtype=np.uint8)
-            np_arr_copy = np_arr.copy()  # Ensure the array is writable.
+            np_arr = np.frombuffer(img_data, dtype=np.uint8) # Not directly writable
+            np_arr_copy = np_arr.copy()
             img = cv2.imdecode(np_arr_copy, cv2.IMREAD_COLOR)
             if img is None:
                 raise ValueError("Could not decode image data with imdecode")
@@ -84,7 +83,7 @@ point_dtype_32 = np.dtype([
 
 def decode_rgb_pointcloud(msg):
     """
-    Simplified decoder for a sensor_msgs/PointCloud2 with:
+    Decodes FAST-LIVO2 PointCloudXYZRGB (sensor_msgs/PointCloud2) with:
       - point_step = 32 bytes
       - fields: x, y, z, intensity, rgb (packed as float), plus 12 bytes padding
       - possibly multi-row (height>1), each row has row_step bytes
@@ -92,7 +91,6 @@ def decode_rgb_pointcloud(msg):
       A NumPy array of shape (N,6) -> columns: [x,y,z,r,g,b].
     """
     try:
-        # 1) Extract base64-encoded or raw bytes from msg['data'].
         raw_data = msg.get('data', '')
         if isinstance(raw_data, dict):
             raw_data = raw_data.get('data', '')
@@ -110,7 +108,7 @@ def decode_rgb_pointcloud(msg):
             else:
                 raise ValueError(f"Unexpected type for pointcloud data: {type(raw_data)}")
         
-        # 2) Parse metadata from the message (height, width, row_step, is_bigendian).
+        # Parse metadata
         height = msg.get('height', 1)
         width = msg.get('width', 0)
         point_step = msg.get('point_step', 32)
@@ -118,13 +116,8 @@ def decode_rgb_pointcloud(msg):
         is_bigendian = msg.get('is_bigendian', False)
         
         if width == 0:
-            # If the user didn't set width, try inferring from total bytes
             width = len(data_bytes) // point_step
         
-        # 3) If big-endian, swap bytes after reading them.
-        #    We'll do it after extracting each row, see below.
-        
-        # 4) Read each row in a loop, to handle any row padding properly.
         all_points = []
         for row_i in range(height):
             start = row_i * row_step
@@ -143,10 +136,10 @@ def decode_rgb_pointcloud(msg):
         # Concatenate all rows into one array of shape (height*width,).
         points = np.concatenate(all_points, axis=0)
         
-        # 5) Extract x,y,z.
+        # Extract x,y,z.
         xyz = np.stack((points['x'], points['y'], points['z']), axis=1)
         
-        # 6) Unpack rgb. It's stored as a float, but we treat the bits as a uint32.
+        # Unpack rgb
         rgb_float = points['rgb']
         rgb_uint = rgb_float.view(np.uint32)
         # Extract channels (assuming 0x00RRGGBB).
@@ -154,7 +147,7 @@ def decode_rgb_pointcloud(msg):
         g = ((rgb_uint >> 8) & 0xFF).astype(np.float32)
         b = (rgb_uint & 0xFF).astype(np.float32)
         
-        # 7) Combine xyz and rgb => shape (N,6).
+        # xyz and rgb => shape (N,6).
         rgb_arr = np.stack((r, g, b), axis=1)
         result = np.concatenate((xyz, rgb_arr), axis=1)
         
@@ -241,7 +234,6 @@ class HISLAM2Data:
         self.pose_data = {}    # {timestamp: torch.Tensor [tx, ty, tz, qx, qy, qz, qw]}
         self.lidar_data = {}   # {timestamp: torch.Tensor [N, 6], columns: [x, y, z, r, g, b]}
         self.lock = threading.Lock()
-        self.last_synchronized_time = -1 # Init -1 to indicate no sync yet
 
     def store_camera(self, stamp, img_tensor):
         with self.lock:
@@ -255,54 +247,83 @@ class HISLAM2Data:
         with self.lock:
             self.lidar_data[stamp] = points
 
-    def pop_synced_data(self, tolerance=0.1):
+    def pop_synced_data(self, tolerance=0.15, wait_for_sensors=1):
         """
-        For each camera frame (in order of arrival), find the LiDAR and pose frames 
-        whose timestamps are closest to the camera timestamp, within the given tolerance.
-        If both differences are within tolerance, pop those frames from the buffers and return them.
-        Otherwise, discard the camera frame and return None.
-
+        For the earliest camera frame, wait up to `wait_for_sensors` seconds for both a 
+        pose and a LiDAR frame whose timestamps are within `tolerance` of the camera timestamp.
+        
+        Once a synchronized package is found, pop the corresponding camera, pose, and LiDAR 
+        entries from their buffers and prune any older entries (with timestamps earlier than 
+        the camera frame). If, after waiting, either sensor still does not have a match within 
+        tolerance, discard the camera frame.
+        
         Returns:
-        (sync_time, camera_tensor, pose_tensor, lidar_tensor) or None if no synchronized data is found.
+        (sync_time, camera_tensor, pose_tensor, lidar_tensor) if a match is found,
+        or None if no match is found.
         """
+        # Get the earliest camera frame as anchor.
         with self.lock:
             if not (self.camera_data and self.pose_data and self.lidar_data):
                 # logger.debug("One or more sensor dictionaries are empty.")
                 return None
-
-            # Get the earliest camera frame as the anchor.
             cam_keys = sorted(self.camera_data.keys())
             cam_time = cam_keys[0]
-
-            # Find the closest pose timestamp.
-            pose_keys = sorted(self.pose_data.keys())
-            closest_pose = min(pose_keys, key=lambda t: abs(t - cam_time))
-
-            # Find the closest LiDAR timestamp.
-            lidar_keys = sorted(self.lidar_data.keys())
-            closest_lidar = min(lidar_keys, key=lambda t: abs(t - cam_time))
-
-            # Check if both differences are within tolerance.
-            diff_pose = abs(cam_time - closest_pose)
-            diff_lidar = abs(cam_time - closest_lidar)
+            cam_data = self.camera_data[cam_time]
+        
+        start_wait = time.time()
+        best_pose = None
+        best_lidar = None
+        diff_pose = float('inf')
+        diff_lidar = float('inf')
+        
+        # Wait for both pose and LiDAR to be within tolerance.
+        while time.time() - start_wait < wait_for_sensors:
+            with self.lock:
+                if self.pose_data:
+                    pose_keys = sorted(self.pose_data.keys())
+                    best_pose = min(pose_keys, key=lambda t: abs(t - cam_time))
+                    diff_pose = abs(cam_time - best_pose)
+                if self.lidar_data:
+                    lidar_keys = sorted(self.lidar_data.keys())
+                    best_lidar = min(lidar_keys, key=lambda t: abs(t - cam_time))
+                    diff_lidar = abs(cam_time - best_lidar)
             if diff_pose <= tolerance and diff_lidar <= tolerance:
-                # Pop and return synchronized data.
-                cam = self.camera_data.pop(cam_time)
-                pose = self.pose_data.pop(closest_pose)
-                lidar = self.lidar_data.pop(closest_lidar)
-                # Use a simple average of the three timestamps as the sync time.
-                sync_time = (cam_time + closest_pose + closest_lidar) / 3.0
-                logger.info(f"Synchronized data: camera {cam_time:.9f}, pose {closest_pose:.9f}, "
-                            f"lidar {closest_lidar:.9f}; sync_time = {sync_time:.9f}")
-                return sync_time, cam, pose, lidar
-            else:
-                logger.debug(f"Discarding camera frame at {cam_time:.9f}: "
-                            f"pose diff = {diff_pose:.9f}, lidar diff = {diff_lidar:.9f}")
-                # Discard the unmatched camera frame.
-                self.camera_data.pop(cam_time)
-                return None
+                break
+            time.sleep(0.005)  # Wait before checking again
+        
+        if diff_pose > tolerance or diff_lidar > tolerance:
+            logger.debug(f"[SYNC] Discarding camera frame at {cam_time:.9f}: pose diff = {diff_pose:.9f}, lidar diff = {diff_lidar:.9f}")
+            with self.lock:
+                if cam_time in self.camera_data:
+                    del self.camera_data[cam_time]
+            return None
+        
+        # Both within tolerance, pop synchronized data.
+        with self.lock:
+            # Re-read in case new data arrived.
+            pose_keys = sorted(self.pose_data.keys())
+            best_pose = min(pose_keys, key=lambda t: abs(t - cam_time))
+            lidar_keys = sorted(self.lidar_data.keys())
+            best_lidar = min(lidar_keys, key=lambda t: abs(t - cam_time))
+            
+            cam = self.camera_data.pop(cam_time)
+            pose = self.pose_data.pop(best_pose)
+            lidar = self.lidar_data.pop(best_lidar)
+            # Prune old pose and lidar entries
+            for key in list(self.pose_data.keys()):
+                if key < cam_time:
+                    del self.pose_data[key]
+            for key in list(self.lidar_data.keys()):
+                if key < cam_time:
+                    del self.lidar_data[key]
+        
+        sync_time = cam_time  # Use camera timestamp as synchronized time.
+        logger.info(f"[SYNC] Synchronized data: camera {cam_time:.9f}, pose {best_pose:.9f}, "
+                    f"lidar {best_lidar:.9f}; sync_time = {sync_time:.9f}")
+        return sync_time, cam, pose, lidar
 
-    # Optional get functions for online mode
+
+    # (Placeholder) Optional get functions for online mode
     def get_latest_camera(self):
         with self.lock:
             if self.camera_data:
@@ -324,13 +345,13 @@ class HISLAM2Data:
 # ----------------------------
 # Sync Sensor Streams
 # ----------------------------
-def sync_thread(data_store, exposure_time=0.0, tolerance=0.1):
+def sync_thread(data_store, tolerance=0.15, wait=2):
     """
     Continuously attempt to synchronize incoming sensor data.
     If a synchronized package is found, put it into the sync_queue.
     """
     while True:
-        synced = data_store.pop_synced_data(tolerance=tolerance)
+        synced = data_store.pop_synced_data(tolerance=tolerance, wait_for_sensors=wait)
         if synced is not None:
             sync_queue.put(synced)
         else:
@@ -350,7 +371,7 @@ def saving_thread(output_dir):
     index = 0
     while True:
         try:
-            # Wait for a synchronized package; timeout after 1 second if none is available.
+            # Wait for a synchronized package; timeout if none.
             synced = sync_queue.get(timeout=1)
         except queue.Empty:
             continue
@@ -361,29 +382,26 @@ def saving_thread(output_dir):
         frame_folder = os.path.join(output_dir, f"frame{index}")
         os.makedirs(frame_folder, exist_ok=True)
         
-        # Save Camera Image.
         try:
-            # Assume cam is a torch tensor in (C, H, W) format in RGB.
+            # Cam is torch tensor in (C, H, W) format in RGB.
             img_np = cam.cpu().permute(1, 2, 0).numpy().astype(np.uint8)
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
             cv2.imwrite(os.path.join(frame_folder, "image.png"), img_bgr)
         except Exception as e:
             print("Error saving image:", e)
         
-        # Save Lidar Points.
         try:
             points = lidar.cpu().numpy()
             np.save(os.path.join(frame_folder, "points.npy"), points)
         except Exception as e:
             print("Error saving lidar points:", e)
         
-        # Save Pose.
         try:
             torch.save(pose, os.path.join(frame_folder, "pose.pt"))
         except Exception as e:
             print("Error saving pose:", e)
         
-        print(f"Saved synchronized data for stamp {stamp} as frame {index}.")
+        print(f"[SAVE] Saved synchronized data for stamp {stamp} as frame {index}.")
         index += 1
         sync_queue.task_done()
 
@@ -445,7 +463,7 @@ class HISLAM2BridgeClient:
             os.makedirs(out_folder, exist_ok=True)
             threading.Thread(target=saving_thread, args=(out_folder,), daemon=True).start()
 
-        print("HI-SLAM2 Bridge Client running and processing incoming data...")
+        print("HI-SLAM2 Bridge Client running, waiting for incoming data...")
         try:
             while True:
                 time.sleep(0.1)

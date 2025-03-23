@@ -67,7 +67,7 @@ rosbag play ~/dataset_fastlivo2/YOUR_FILE.bag
 ## HI-SLAM2 in ROS environment:
 - Build `HISLAM2 With GPU` devcontainer
 - Postcreatecommand runs `setup.py` automatically, installing CUDA extensions.
-> Warning: the postcreatecommand takes a long time, if you rebuild the container instead of reopen, this long step will take a while.
+> Warning: the postcreatecommand takes a long time, if you "rebuild" container instead of "reopen", this long step will take a while.
 ### Activate HI-SLAM2 Conda Environment:
 >Same as HI-SLAM2 instructions
 ```bash
@@ -89,13 +89,13 @@ python demo.py \
 --droidvis
 ```
 
-### Let FAST-LIVO2 communicate with HI-SLAM2 (with bridge)
+### Convert FAST-LIVO2 ROS messages to HI-SLAM2 data structure (with bridge)
 Container publishes ROS message on localhost and forwards websocket to 9090 (example). HISLAM2BridgeClient listens to websocket, parses, and stores data in torch tensors.
 ```bash
 # Terminal 1
 roslaunch rosbridge_server rosbridge_websocket.launch port:=9090
 
-# Terminal 2: Decode ROS msgs and sync sensors
+# Terminal 2: Decode ROS msgs and sync sensor data. Optionally save to folder.
 act_hi2
 cd /catkin_ws/src/HI-SLAM2
 python scripts/run_ros_conversions.py 

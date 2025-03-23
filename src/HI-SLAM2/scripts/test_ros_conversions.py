@@ -52,7 +52,7 @@ def visualize_images(data_folder):
             ax.imshow(img_rgb)
             ax.set_title(frame)
             ax.axis('off')
-            plt.pause(0.5)
+            plt.pause(0.1)
     plt.ioff()
     plt.show()
 
@@ -101,7 +101,7 @@ def visualize_lidar(data_folder, xlim=(-50, 50), ylim=(-50, 50), zlim=(-10, 30))
             ax.set_zlim3d(*zlim)
 
             plt.draw()
-            plt.pause(0.5)
+            plt.pause(0.1)
         else:
             print("File not found:", points_path)
 
@@ -124,7 +124,7 @@ def quaternion_to_rotation_matrix(q):
     ])
     return R
 
-def plot_coordinate_frame(ax, translation, quaternion, scale=0.05):
+def plot_coordinate_frame(ax, translation, quaternion, scale=1):
     """
     Draw a coordinate frame (using quiver arrows) at a given translation and orientation.
     
@@ -174,19 +174,24 @@ def visualize_pose(data_folder):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
 
-    # Plot the trajectory line.
     ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], 'k-', label="Trajectory")
-    
-    # Optionally mark start and end.
-    ax.scatter(positions[0, 0], positions[0, 1], positions[0, 2],
-               color='green', s=50, label="Start")
-    ax.scatter(positions[-1, 0], positions[-1, 1], positions[-1, 2],
-               color='red', s=50, label="End")
-    
-    # Draw a coordinate frame at every pose.
+    ax.scatter(positions[0, 0], positions[0, 1], positions[0, 2], color='green', s=50, label="Start")
+    ax.scatter(positions[-1, 0], positions[-1, 1], positions[-1, 2], color='red', s=50, label="End")
     for pos, quat in zip(positions, quaternions):
-        plot_coordinate_frame(ax, pos, quat, scale=0.05)
+        plot_coordinate_frame(ax, pos, quat, scale=1)
     
+    # Make x, y, z scales equal
+    x_min, x_max = positions[:, 0].min(), positions[:, 0].max()
+    y_min, y_max = positions[:, 1].min(), positions[:, 1].max()
+    z_min, z_max = positions[:, 2].min(), positions[:, 2].max()
+    max_range = max((x_max - x_min), (y_max - y_min), (z_max - z_min)) * 0.5
+    mid_x = (x_max + x_min) * 0.5
+    mid_y = (y_max + y_min) * 0.5
+    mid_z = (z_max + z_min) * 0.5
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
     ax.set_title("Camera Trajectory with Coordinate Frames at Every Step")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
