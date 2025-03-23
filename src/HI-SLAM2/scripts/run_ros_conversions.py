@@ -27,9 +27,10 @@ import logging
 # ----------------------------
 # Queues for asynchronous processing
 # ----------------------------
-image_queue = queue.Queue(maxsize=100)
-pose_queue = queue.Queue(maxsize=100)
-lidar_queue = queue.Queue(maxsize=100)
+image_queue = queue.Queue()
+pose_queue = queue.Queue()
+lidar_queue = queue.Queue()
+sync_queue = queue.Queue()
 
 # ----------------------------
 # Helper Functions for Message Decoding
@@ -98,7 +99,7 @@ def decode_rgb_pointcloud(msg):
         
         if isinstance(raw_data, str):
             data_bytes = base64.b64decode(raw_data)
-            logger.debug("Decoded pointcloud data from base64 string.")
+            # logger.debug("Decoded pointcloud data from base64 string.")
         elif isinstance(raw_data, (bytes, bytearray)):
             data_bytes = raw_data
         else:
@@ -254,80 +255,87 @@ class HISLAM2Data:
         with self.lock:
             self.lidar_data[stamp] = points
 
-    def pop_synced_data(self, exposure_time=0.0, tolerance=0.15):
+    def pop_sequential_data(self):
         """
-        Synchronize camera, pose, and LiDAR data using the first camera frame as the anchor.
-        The camera timestamp is adjusted by an exposure_time offset.
-        NOTE: Tolerance must be approximately 150-200ms as FAST-LIVO2 synced stream is at 10Hz.
-        - Future work to tightly integrate with FAST-LIVO2 sync_packages().
+        Sequentially pop the earliest data from each sensor's storage,
+        assuming the sensor streams are nearly synchronized.
         
-        Mimics FAST-LIVO's approach:
-        - If last_synchronized_time is negative, initialize it with the earliest LiDAR timestamp.
-        - Compute img_capture_time = first camera time + exposure_time.
-        - If img_capture_time is earlier than last_synchronized_time (within a tolerance), discard that camera frame.
-        - If img_capture_time is later than the newest LiDAR or pose data, return None (i.e. wait for more data).
-        - Otherwise, select the camera frame as the anchor and find the closest pose and LiDAR times.
-        If both differences are within tolerance, pop and return the synchronized package.
-
         Returns:
-        (sync_time, camera_tensor, pose_tensor, lidar_tensor) or None if no sync data exists.
+          (sync_time, camera_tensor, pose_tensor, lidar_tensor) or None if one
+          or more sensor buffers are empty.
         """
         with self.lock:
-            # Ensure that all three sensor dictionaries have data.
             if not (self.camera_data and self.pose_data and self.lidar_data):
                 logger.debug("One or more sensor dictionaries are empty.")
                 return None
+            
+            logger.info(f"Queue sizes: camera {image_queue.qsize()}, pose {pose_queue.qsize()}, lidar {lidar_queue.qsize()}")
 
-            # Use the earliest camera timestamp as the reference.
+            # Sort keys and pop the earliest from each.
+            cam_keys = sorted(self.camera_data.keys())
+            pose_keys = sorted(self.pose_data.keys())
+            lidar_keys = sorted(self.lidar_data.keys())
+
+            cam_time = cam_keys[0]
+            pose_time = pose_keys[0]
+            lidar_time = lidar_keys[0]
+
+            cam = self.camera_data.pop(cam_time)
+            pose = self.pose_data.pop(pose_time)
+            lidar = self.lidar_data.pop(lidar_time)
+
+            # Compute a simple average timestamp for reference.
+            sync_time = (cam_time + pose_time + lidar_time) / 3.0
+            logger.info(f"Popped sequential data: camera {cam_time:.9f}, "
+                        f"pose {pose_time:.9f}, lidar {lidar_time:.9f}; sync_time = {sync_time:.9f}")
+            return sync_time, cam, pose, lidar
+
+    def pop_synced_data(self, tolerance=0.1):
+        """
+        For each camera frame (in order of arrival), find the LiDAR and pose frames 
+        whose timestamps are closest to the camera timestamp, within the given tolerance.
+        If both differences are within tolerance, pop those frames from the buffers and return them.
+        Otherwise, discard the camera frame and return None.
+
+        Returns:
+        (sync_time, camera_tensor, pose_tensor, lidar_tensor) or None if no synchronized data is found.
+        """
+        with self.lock:
+            if not (self.camera_data and self.pose_data and self.lidar_data):
+                # logger.debug("One or more sensor dictionaries are empty.")
+                return None
+
+            # Get the earliest camera frame as the anchor.
             cam_keys = sorted(self.camera_data.keys())
             cam_time = cam_keys[0]
-            # Adjust camera timestamp with the exposure offset.
-            img_capture_time = cam_time + exposure_time
 
-            # If last_synchronized_time is not initialized, set it to the earliest LiDAR timestamp.
-            if self.last_synchronized_time < 0:
-                lidar_keys = sorted(self.lidar_data.keys())
-                self.last_synchronized_time = lidar_keys[0]
+            # Find the closest pose timestamp.
+            pose_keys = sorted(self.pose_data.keys())
+            closest_pose = min(pose_keys, key=lambda t: abs(t - cam_time))
 
-            # Get the newest LiDAR and pose timestamps.
-            lidar_newest = max(self.lidar_data.keys())
-            pose_newest = max(self.pose_data.keys())
+            # Find the closest LiDAR timestamp.
+            lidar_keys = sorted(self.lidar_data.keys())
+            closest_lidar = min(lidar_keys, key=lambda t: abs(t - cam_time))
 
-            # If the adjusted image capture time is earlier than the last synchronized time, discard this camera frame.
-            if img_capture_time < self.last_synchronized_time + 1e-5:
-                logger.debug("Image capture time is earlier than last synchronized time, discarding camera frame.")
+            # Check if both differences are within tolerance.
+            diff_pose = abs(cam_time - closest_pose)
+            diff_lidar = abs(cam_time - closest_lidar)
+            if diff_pose <= tolerance and diff_lidar <= tolerance:
+                # Pop and return synchronized data.
+                cam = self.camera_data.pop(cam_time)
+                pose = self.pose_data.pop(closest_pose)
+                lidar = self.lidar_data.pop(closest_lidar)
+                # Use a simple average of the three timestamps as the sync time.
+                sync_time = (cam_time + closest_pose + closest_lidar) / 3.0
+                logger.info(f"Synchronized data: camera {cam_time:.9f}, pose {closest_pose:.9f}, "
+                            f"lidar {closest_lidar:.9f}; sync_time = {sync_time:.9f}")
+                return sync_time, cam, pose, lidar
+            else:
+                logger.debug(f"Discarding camera frame at {cam_time:.9f}: "
+                            f"pose diff = {diff_pose:.9f}, lidar diff = {diff_lidar:.9f}")
+                # Discard the unmatched camera frame.
                 self.camera_data.pop(cam_time)
                 return None
-
-            # If the image capture time is later than the newest available LiDAR or pose data, wait.
-            if img_capture_time > lidar_newest or img_capture_time > pose_newest:
-                logger.debug("Image capture time is later than newest LiDAR/pose data, waiting for more data.")
-                return None
-
-            # Find the closest pose timestamp to img_capture_time.
-            closest_pose = min(self.pose_data.keys(), key=lambda t: abs(t - img_capture_time))
-            # Find the closest LiDAR timestamp to img_capture_time.
-            closest_lidar = min(self.lidar_data.keys(), key=lambda t: abs(t - img_capture_time))
-
-            # Check if the differences are within tolerance.
-            if abs(img_capture_time - closest_pose) > tolerance or abs(img_capture_time - closest_lidar) > tolerance:
-                logger.debug("Closest sensor data not within tolerance.")
-                return None
-
-            # Update last_synchronized_time to the synchronized time.
-            self.last_synchronized_time = img_capture_time
-
-            # Pop the synchronized data.
-            cam = self.camera_data.pop(cam_time)
-            pose = self.pose_data.pop(closest_pose)
-            lidar = self.lidar_data.pop(closest_lidar)
-            logger.debug(f"Popped synchronized data: camera {cam_time:.9f}, pose {closest_pose:.9f}, "
-                        f"lidar {closest_lidar:.9f}; sync_time = {img_capture_time:.9f}")
-            logger.info(f"Popped synchronized data: camera {cam_time:.9f}, pose {closest_pose:.9f}, "
-                        f"lidar {closest_lidar:.9f}; sync_time = {img_capture_time:.9f}")
-            return img_capture_time, cam, pose, lidar
-
-
 
     # Optional get functions for online mode
     def get_latest_camera(self):
@@ -347,62 +355,73 @@ class HISLAM2Data:
             if self.lidar_data:
                 return self.lidar_data[max(self.lidar_data.keys())]
             return None
+        
+# ----------------------------
+# Sync Sensor Streams
+# ----------------------------
+def sync_thread(data_store, exposure_time=0.0, tolerance=0.1):
+    """
+    Continuously attempt to synchronize incoming sensor data.
+    If a synchronized package is found, put it into the sync_queue.
+    """
+    while True:
+        # synced = data_store.pop_sequential_data()
+        synced = data_store.pop_synced_data(tolerance=tolerance)
+        if synced is not None:
+            sync_queue.put(synced)
+        else:
+            time.sleep(0.005)
 
 # ----------------------------
 # Preprocess and Save (offline)
 # ----------------------------
-def preprocess_data(data_store, output_dir):
+def saving_thread(output_dir):
     """
-    Continuously checks for synchronized data and saves each frame's data into a new folder.
-    
-    Each frame folder (e.g. frame0, frame1, ...) will contain:
-      - image.png : the camera image
-      - points.npy: the lidar points stored as a NumPy array (shape: [N,6])
-      - pose.pt   : the pose stored as a torch tensor
+    Continuously get synchronized data packages from the sync_queue and save them.
+    Each frame folder (HI-SLAM2/data/folder/frameX) contains:
+      - image.png:  RGB image (C, H, W)
+      - points.npy: lidar points in world frame (shape: [N,6] -> columns: [x, y, z, r, g, b])
+      - pose.pt:    pose torch tensor [tx, ty, tz, qx, qy, qz, qw]
     """
-    import cv2  # local import to ensure cv2 is available for image saving
     index = 0
     while True:
-        synced = data_store.pop_synced_data()
-        if synced is not None:
-            stamp, cam, pose, lidar = synced
-            # Create a folder for the current frame.
-            frame_folder = os.path.join(output_dir, f"frame{index}")
-            os.makedirs(frame_folder, exist_ok=True)
-            
-            # --- Save Image ---
-            try:
-                # Torch tensor has shape (C, H, W) in RGB.
-                # Convert to (H, W, C) and then to uint8.
-                img_np = cam.cpu().permute(1, 2, 0).numpy().astype(np.uint8)
-                # Convert from RGB to BGR for OpenCV.
-                img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                image_path = os.path.join(frame_folder, "image.png")
-                cv2.imwrite(image_path, img_bgr)
-            except Exception as e:
-                print("Error saving image:", e)
-            
-            # --- Save Lidar ---
-            try:
-                # Convert lidar (torch tensor) to a NumPy array.
-                points = lidar.cpu().numpy()
-                points_path = os.path.join(frame_folder, "points.npy")
-                np.save(points_path, points)
-            except Exception as e:
-                print("Error saving lidar points:", e)
-            
-            # --- Save Pose ---
-            try:
-                pose_path = os.path.join(frame_folder, "pose.pt")
-                torch.save(pose, pose_path)
-            except Exception as e:
-                print("Error saving pose:", e)
-            
-            print(f"Saved synchronized data for stamp {stamp} as frame {index}.")
-            index += 1
-        else:
-            time.sleep(0.01)
+        try:
+            # Wait for a synchronized package; timeout after 1 second if none is available.
+            synced = sync_queue.get(timeout=1)
+        except queue.Empty:
+            continue
 
+        stamp, cam, pose, lidar = synced
+
+        # Create a folder for this frame.
+        frame_folder = os.path.join(output_dir, f"frame{index}")
+        os.makedirs(frame_folder, exist_ok=True)
+        
+        # Save Camera Image.
+        try:
+            # Assume cam is a torch tensor in (C, H, W) format in RGB.
+            img_np = cam.cpu().permute(1, 2, 0).numpy().astype(np.uint8)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(frame_folder, "image.png"), img_bgr)
+        except Exception as e:
+            print("Error saving image:", e)
+        
+        # Save Lidar Points.
+        try:
+            points = lidar.cpu().numpy()
+            np.save(os.path.join(frame_folder, "points.npy"), points)
+        except Exception as e:
+            print("Error saving lidar points:", e)
+        
+        # Save Pose.
+        try:
+            torch.save(pose, os.path.join(frame_folder, "pose.pt"))
+        except Exception as e:
+            print("Error saving pose:", e)
+        
+        print(f"Saved synchronized data for stamp {stamp} as frame {index}.")
+        index += 1
+        sync_queue.task_done()
 
 # ----------------------------
 # Bridge Client Class
@@ -445,21 +464,22 @@ class HISLAM2BridgeClient:
         self.lidar_topic.subscribe(lambda msg: lidar_queue.put(msg))
 
     def run(self):
+        """
+        Connects to rosbridge, subscribes to sensor topics, and starts the
+        sensor processing, synchronization, and (if in preprocess mode) saving threads.
+        """
         self.connect()
         self.subscribe_to_topics()
-        # Start worker threads for processing each queue
+
         threading.Thread(target=process_image_queue, args=(self.data_store,), daemon=True).start()
         threading.Thread(target=process_pose_queue, args=(self.data_store,), daemon=True).start()
         threading.Thread(target=process_lidar_queue, args=(self.data_store,), daemon=True).start()
+        threading.Thread(target=sync_thread, args=(self.data_store,), daemon=True).start()
 
-        # In preprocess mode, save data to HI-SLAM2/data/<output_name>
         if self.mode == 'preprocess':
-            if self.output_dir is None:
-                raise ValueError("Output folder name must be specified in preprocess mode.")
-            # Create the output folder under HI-SLAM2/data/<output_name>
             out_folder = os.path.join("data", self.output_dir)
             os.makedirs(out_folder, exist_ok=True)
-            threading.Thread(target=preprocess_data, args=(self.data_store, out_folder), daemon=True).start()
+            threading.Thread(target=saving_thread, args=(out_folder,), daemon=True).start()
 
         print("HI-SLAM2 Bridge Client running and processing incoming data...")
         try:
