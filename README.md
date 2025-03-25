@@ -108,3 +108,10 @@ python scripts/run_ros_conversions.py
 # Terminal 3:
 rosbag play path/to/dataset.bag
 ```
+
+### Test Output of Offline Preprocessing
+```bash
+act_hi2
+cd /catkin_ws/src/HI-SLAM2
+python3 scripts/test_ros_conversions.py --mode {image, lidar, pose} --folder <folder name inside HI-SLAM2/data/>
+```
