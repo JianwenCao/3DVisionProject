@@ -153,6 +153,8 @@ class GSBackEnd(mp.Process):
         eval_rendering_kf(self.viewpoints, self.gaussians, self.save_dir, self.background, iteration="after_opt")
 
     def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
+        print(f"Adding keyframe {frame_idx}, depth_map shape: {depth_map.shape if depth_map is not None else 'None'}")
+        print(f"Depth map min: {depth_map.min()}, max: {depth_map.max()}" if depth_map is not None else "No depth map")
         self.gaussians.extend_from_pcd_seq(
             viewpoint, kf_id=frame_idx, init=init, scale=scale, depthmap=depth_map
         )
