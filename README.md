@@ -126,7 +126,7 @@ sudo apt-get -y install libglib2.0-0 -y
 pip install mmcv-full==1.7.2
 ```
 
-Download pretrained weight from
+Download the weight files and json files at [URL](https://drive.google.com/drive/folders/1fzh0btV3Gd1qeY6Yr9qzACRo5HcSer4I?usp=sharing)
 Put under pretrained model folder
 ```
 pretrained
