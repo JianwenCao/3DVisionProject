@@ -115,3 +115,23 @@ act_hi2
 cd /catkin_ws/src/HI-SLAM2
 python3 scripts/test_ros_conversions.py --mode {image, lidar, pose} --folder <folder name inside HI-SLAM2/data/>
 ```
+
+## Hi-SLAM2 Configuration
+### Depth Prompt Model Configuration
+Additional requiremtnts for depth prompt model:
+```
+sudo apt-get update
+sudo apt-get -y install libgl1-mesa-glx -y
+sudo apt-get -y install libglib2.0-0 -y
+pip install mmcv-full==1.7.2
+```
+
+Download pretrained weight from
+Put under pretrained model folder
+```
+pretrained
+├── COMMON
+│    ├── resnet34.pth
+└──Depthprompting_depthformer_kitti.tar
+└──Depthprompting_depthformer_nyu.tar
+```
