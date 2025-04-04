@@ -2,58 +2,62 @@ import torch
 from munch import munchify
 import yaml
 from gs_backend import GSBackEnd
-from lietorch import SE3
+import numpy as np
+from scipy.spatial.transform import Rotation as R
 
-def rotation_matrix_to_quaternion(rot_mat):
-    """Convert a 3x3 rotation matrix to a quaternion [qx, qy, qz, qw]."""
-    device = rot_mat.device
-    quat = torch.zeros(4, device=device)
-    trace = torch.trace(rot_mat)
 
-    if trace > 0:
-        S = torch.sqrt(trace + 1.0) * 2
-        quat[3] = 0.25 * S
-        quat[0] = (rot_mat[2, 1] - rot_mat[1, 2]) / S
-        quat[1] = (rot_mat[0, 2] - rot_mat[2, 0]) / S
-        quat[2] = (rot_mat[1, 0] - rot_mat[0, 1]) / S
-    elif rot_mat[0, 0] > max(rot_mat[1, 1], rot_mat[2, 2]):
-        S = torch.sqrt(1.0 + rot_mat[0, 0] - rot_mat[1, 1] - rot_mat[2, 2]) * 2
-        quat[3] = (rot_mat[2, 1] - rot_mat[1, 2]) / S
-        quat[0] = 0.25 * S
-        quat[1] = (rot_mat[0, 1] + rot_mat[1, 0]) / S
-        quat[2] = (rot_mat[0, 2] + rot_mat[2, 0]) / S
-    elif rot_mat[1, 1] > rot_mat[2, 2]:
-        S = torch.sqrt(1.0 + rot_mat[1, 1] - rot_mat[0, 0] - rot_mat[2, 2]) * 2
-        quat[3] = (rot_mat[0, 2] - rot_mat[2, 0]) / S
-        quat[0] = (rot_mat[0, 1] + rot_mat[1, 0]) / S
-        quat[1] = 0.25 * S
-        quat[2] = (rot_mat[1, 2] + rot_mat[2, 1]) / S
-    else:
-        S = torch.sqrt(1.0 + rot_mat[2, 2] - rot_mat[0, 0] - rot_mat[1, 1]) * 2
-        quat[3] = (rot_mat[1, 0] - rot_mat[0, 1]) / S
-        quat[0] = (rot_mat[0, 2] + rot_mat[2, 0]) / S
-        quat[1] = (rot_mat[1, 2] + rot_mat[2, 1]) / S
-        quat[2] = 0.25 * S
+def pose_to_extrinsic(tx, ty, tz, qx, qy, qz, qw):
+    def quaternion_to_rotation_matrix(qx, qy, qz, qw):
+        norm = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+        qx, qy, qz, qw = qx/norm, qy/norm, qz/norm, qw/norm
+        R = np.array([
+            [1 - 2*qy*qy - 2*qz*qz, 2*qx*qy - 2*qz*qw, 2*qx*qz + 2*qy*qw],
+            [2*qx*qy + 2*qz*qw, 1 - 2*qx*qx - 2*qz*qz, 2*qy*qz - 2*qx*qw],
+            [2*qx*qz - 2*qy*qw, 2*qy*qz + 2*qx*qw, 1 - 2*qx*qx - 2*qy*qy]
+        ])
+        return R
+    R_A = quaternion_to_rotation_matrix(qx, qy, qz, qw)
+    t_A = np.array([tx, ty, tz])
+    T = np.array([  [0, -1, 0],
+                    [0, 0, -1],
+                    [1, 0, 0]])
+    R_B = T @ R_A @ T.T
+    t_B = t_A
+    extrinsic = np.eye(4)
+    extrinsic[:3, :3] = R_B
+    extrinsic[:3, 3] = t_B
+    return torch.tensor(extrinsic, dtype=torch.float32)
 
-    return quat / torch.norm(quat)
 
-def transform_pose_to_camera_frame(pose):
-    """Transform LiDAR-to-world pose to world-to-camera pose."""
-    translation = pose[:3]
-    quaternion = pose[3:] / torch.norm(pose[3:] + 1e-6)
+def extrinsic_to_pose(T):
+    """
+    Convert a 4x4 extrinsic transformation matrix to translation and quaternion.
 
-    new_translation = torch.tensor([translation[2], -translation[0], -translation[1]],
-                                   device=pose.device)
+    Parameters
+    ----------
+    T : numpy.ndarray
+        A 4x4 extrinsic transformation matrix with the following form:
+            [ R (3x3)   t (3x1) ]
+            [ 0  0  0     1     ]
 
-    rotation_transform = torch.tensor([[0, -1, 0], [0, 0, -1], [1, 0, 0]],
-                                      dtype=torch.float32, device=pose.device)
-    transform_quat = rotation_matrix_to_quaternion(rotation_transform)
+    Returns
+    -------
+    tx, ty, tz, qx, qy, qz, qw : float
+        The translation components (tx, ty, tz) and the quaternion (qx, qy, qz, qw).
+        Note: The quaternion is returned in the (x, y, z, w) format.
+    """
+    # Extract the translation vector from the last column
+    t = T[:3, 3]
 
-    se3_pose = SE3.InitFromVec(pose.unsqueeze(0))
-    transform_vec = torch.cat([torch.zeros(3, device=pose.device), transform_quat])
-    transform_se3 = SE3.InitFromVec(transform_vec.unsqueeze(0))
+    # Extract the rotation matrix from the top-left 3x3 block
+    R_mat = T[:3, :3]
 
-    return (transform_se3 * se3_pose).inv().vec().squeeze(0)
+    # Convert the rotation matrix to a quaternion using SciPy.
+    # The result is in the (x, y, z, w) order.
+    r = R.from_matrix(R_mat)
+    q = r.as_quat()
+
+    return torch.tensor([t[0], t[1], t[2], q[0], q[1], q[2], q[3]])
 
 def load_config(config_path):
     """Load configuration from YAML file."""

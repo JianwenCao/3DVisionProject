@@ -117,21 +117,6 @@ python3 scripts/test_ros_conversions.py --mode {image, lidar, pose} --folder <fo
 ```
 
 ## Hi-SLAM2 Configuration
-### Depth Prompt Model Configuration
-Additional requiremtnts for depth prompt model:
-```
-sudo apt-get update
-sudo apt-get -y install libgl1-mesa-glx -y
-sudo apt-get -y install libglib2.0-0 -y
-pip install mmcv-full==1.7.2
-```
-
-Download the weight files and json files at [URL](https://drive.google.com/drive/folders/1fzh0btV3Gd1qeY6Yr9qzACRo5HcSer4I?usp=sharing)
-Put under pretrained model folder
-```
-pretrained
-├── COMMON
-│    ├── resnet34.pth
-└──Depthprompting_depthformer_kitti.tar
-└──Depthprompting_depthformer_nyu.tar
-```
+pip install torch-cluster
+transformers
+for keyframe selection based on LiDAR overlap

@@ -104,9 +104,9 @@ class GSBackEnd(mp.Process):
             viewpoint = Camera.init_from_tracking(packet["images"][i] / 255.0, packet["depths"][i], None, w2c[i], idx,
                                                   self.projection_matrix, self.K, tstamp)
             if idx not in self.current_window:
-                self.current_window = [idx] + self.current_window[:-1] if len(self.current_window) > 10 else [
-                                                                                                                 idx] + self.current_window
+                self.current_window = [idx] + self.current_window[:-1] if len(self.current_window) > 10 else [idx] + self.current_window
                 if not self.initialized:
+                    print("Initializing map")
                     self.reset()
                     self.viewpoints[idx] = viewpoint
                     self.add_next_kf(0, viewpoint, depth_map=packet["depths"][0].numpy(), init=True)
