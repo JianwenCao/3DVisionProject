@@ -6,6 +6,7 @@ This script reads from a data folder (with structure: data/<folder_name>/frameX/
 and visualizes one of the following based on the --mode argument:
   - image: Display the image sequence.
   - lidar: Visualize the lidar point clouds in 3D.
+    - Use the left/right arrow keys to step backward and forward through the frames.
   - pose: Visualize the camera pose trajectory in 3D.
 
 Usage:
@@ -52,14 +53,14 @@ def visualize_images(data_folder):
             ax.imshow(img_rgb)
             ax.set_title(frame)
             ax.axis('off')
-            plt.pause(0.1)
+            plt.pause(0.05)
     plt.ioff()
     plt.show()
 
 def visualize_lidar(data_folder, xlim=(-50, 50), ylim=(-50, 50), zlim=(-10, 30)):
     """
-    Visualize lidar points for each frame in 3D with a fixed bounding box,
-    so the axes do not change between frames.
+    Visualize lidar points for each frame in 3D. Use the left/right arrow keys
+    to step backward and forward through the frames.
     
     Args:
         data_folder (str): Path to the directory containing frame subfolders.
@@ -71,42 +72,70 @@ def visualize_lidar(data_folder, xlim=(-50, 50), ylim=(-50, 50), zlim=(-10, 30))
     if not frame_dirs:
         print("No frame folders found in", data_folder)
         return
-
-    plt.ion()  # Enable interactive mode
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-
+    
+    # Pre-load all lidar point clouds so that stepping through frames is quick
+    all_points = []
     for frame in frame_dirs:
         points_path = os.path.join(data_folder, frame, "points.npy")
         if os.path.exists(points_path):
             try:
-                # points shape (N,6): [x, y, z, r, g, b]
-                points = np.load(points_path)
+                points = np.load(points_path)  # shape: (N, 6) -> [x, y, z, r, g, b]
             except Exception as e:
                 print("Error loading", points_path, ":", e)
-                continue
-
-            ax.clear()
-            ax.scatter(points[:, 0], points[:, 1], points[:, 2],
-                       s=1, c=points[:, 3:6]/255.0)
-
-            ax.set_title(frame)
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
-            ax.set_zlabel("Z")
-
-            # Fix the axis limits so the viewpoint stays the same
-            ax.set_xlim3d(*xlim)
-            ax.set_ylim3d(*ylim)
-            ax.set_zlim3d(*zlim)
-
-            plt.draw()
-            plt.pause(0.1)
+                points = None
         else:
             print("File not found:", points_path)
-
+            points = None
+        all_points.append(points)
+    
+    # Create figure
+    plt.ion()
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    current_idx = [0]
+    
+    def update_plot():
+        """Clears the axes and plots the point cloud for the current frame."""
+        ax.clear()
+        
+        points = all_points[current_idx[0]]
+        if points is not None:
+            ax.scatter(points[:, 0], points[:, 1], points[:, 2],
+                       s=1, c=points[:, 3:6] / 255.0)
+        
+        frame_label = frame_dirs[current_idx[0]] if current_idx[0] < len(frame_dirs) else "N/A"
+        ax.set_title(frame_label)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        
+        # Optionally fix the axis limits. Uncomment if you want a fixed view:
+        ax.set_xlim3d(*xlim)
+        ax.set_ylim3d(*ylim)
+        ax.set_zlim3d(*zlim)
+        
+        plt.draw()
+    
+    def on_key(event):
+        """Keyboard event handler to move forward/backward through the frames."""
+        if event.key == 'right':
+            # Go forward one frame
+            current_idx[0] = (current_idx[0] + 1) % len(all_points)
+            update_plot()
+        elif event.key == 'left':
+            # Go backward one frame
+            current_idx[0] = (current_idx[0] - 1) % len(all_points)
+            update_plot()
+    
+    # Connect the key press event to our handler
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    
+    update_plot()
+    
     plt.ioff()
     plt.show()
+
 
 def quaternion_to_rotation_matrix(q):
     """
