@@ -115,3 +115,4 @@ act_hi2
 cd /catkin_ws/src/HI-SLAM2
 python3 scripts/test_ros_conversions.py --mode {image, lidar, pose} --folder <folder name inside HI-SLAM2/data/>
 ```
+> Note: If using LiDAR mode, use the left/right arrow keys to move through LiDAR scans. Points are in a fixed world frame.
