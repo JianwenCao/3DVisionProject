@@ -268,13 +268,13 @@ class HISLAM2Data:
                 return None
             cam_keys = sorted(self.camera_data.keys())
             cam_time = cam_keys[0]
-            cam_data = self.camera_data[cam_time]
         
         start_wait = time.time()
         best_pose = None
         best_lidar = None
         diff_pose = float('inf')
         diff_lidar = float('inf')
+        sync_errors = [] # [pose_error, lidar_error] w.r.t cam_time (anchor)
         
         # Wait for both pose and LiDAR to be within tolerance.
         while time.time() - start_wait < wait_for_sensors:
@@ -317,10 +317,13 @@ class HISLAM2Data:
                 if key < cam_time:
                     del self.lidar_data[key]
         
-        sync_time = cam_time  # Use camera timestamp as synchronized time.
+        pose_error = abs(cam_time - best_pose)
+        lidar_error = abs(cam_time - best_lidar)
+        sync_time = cam_time  # Camera timestamp as anchor
+        sync_errors = [pose_error, lidar_error]
         logger.info(f"[SYNC] Synchronized data: camera {cam_time:.9f}, pose {best_pose:.9f}, "
                     f"lidar {best_lidar:.9f}; sync_time = {sync_time:.9f}")
-        return sync_time, cam, pose, lidar
+        return sync_time, cam, pose, lidar, sync_errors
 
 
     # (Placeholder) Optional get functions for online mode
@@ -369,6 +372,7 @@ def saving_thread(output_dir):
       - pose.pt:    pose torch tensor [tx, ty, tz, qx, qy, qz, qw]
     """
     index = 0
+    sync_errors_file = os.path.join(output_dir, "sync_errors.csv")
     while True:
         try:
             # Wait for a synchronized package; timeout if none.
@@ -376,7 +380,8 @@ def saving_thread(output_dir):
         except queue.Empty:
             continue
 
-        stamp, cam, pose, lidar = synced
+        stamp, cam, pose, lidar, sync_errors = synced
+        error_pose, error_lidar = sync_errors
 
         # Create a folder for this frame.
         frame_folder = os.path.join(output_dir, f"frame{index}")
@@ -400,6 +405,16 @@ def saving_thread(output_dir):
             torch.save(pose, os.path.join(frame_folder, "pose.pt"))
         except Exception as e:
             print("Error saving pose:", e)
+
+        try:
+            if os.path.getsize(sync_errors_file) == 0:
+                with open(sync_errors_file, 'w') as f:
+                    f.write("frame_index,camera_timestamp,error_pose,error_lidar\n")
+            with open(sync_errors_file, 'a') as f:
+                # frame_index, camera_timestamp, error_pose, error_lidar
+                f.write(f"{index},{stamp},{error_pose},{error_lidar}\n")
+        except Exception as e:
+            print("Error writing sync errors:", e)
         
         print(f"[SAVE] Saved synchronized data for stamp {stamp} as frame {index}.")
         index += 1

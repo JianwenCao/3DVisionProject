@@ -228,11 +228,99 @@ def visualize_pose(data_folder):
     ax.legend()
     plt.show()
 
+def visualize_sync_errors(data_folder):
+    """
+    Visualize the synchronization errors.
+
+    Expects a file named 'sync_errors.csv' in the data_folder with CSV-formatted lines:
+      frame_index,camera_timestamp,error_pose,error_lidar
+
+    This function creates three plots:
+      1. A time series plot of both pose and LiDAR errors (with frame index on the x-axis).
+      2. A histogram for the distribution of pose errors.
+      3. A histogram for the distribution of LiDAR errors.
+    """
+    sync_errors_file = os.path.join(data_folder, "sync_errors.csv")
+    if not os.path.exists(sync_errors_file):
+        print("Sync errors file not found in", data_folder)
+        return
+    
+    frame_indices = []
+    camera_timestamps = []
+    error_poses = []
+    error_lidars = []
+    
+    with open(sync_errors_file, 'r') as f:
+        for line in f:
+            if line.strip() == "" or line.startswith('#'):
+                continue
+            parts = line.strip().split(',')
+            if len(parts) < 4:
+                continue
+            try:
+                frame_idx = int(parts[0])
+                cam_time = float(parts[1])
+                err_pose = float(parts[2])
+                err_lidar = float(parts[3])
+            except Exception as e:
+                print("Error parsing line:", line, ":", e)
+                continue
+            
+            frame_indices.append(frame_idx)
+            camera_timestamps.append(cam_time)
+            error_poses.append(err_pose)
+            error_lidars.append(err_lidar)
+    
+    if not frame_indices:
+        print("No valid sync error records found.")
+        return
+
+    # Time Series Plot: Errors vs. Frame Index
+    plt.figure(figsize=(10, 5))
+    plt.plot(frame_indices, error_poses, marker='o', linestyle='-', label='Pose Error')
+    plt.plot(frame_indices, error_lidars, marker='x', linestyle='-', label='LiDAR Error')
+    plt.xlabel("Frame Index")
+    plt.ylabel("Sync Error (seconds)")
+    plt.title("Time Synchronization Errors Over Sequence (Camera Time as Anchor)")
+    plt.legend()
+    plt.grid(True)
+    timeseries_path = os.path.join(data_folder, "sync_errors_timeseries.png")
+    plt.savefig(timeseries_path)
+    plt.close()
+    print("Time series plot saved to:", timeseries_path)
+
+    # Histogram for Pose Error Distribution
+    plt.figure(figsize=(10, 5))
+    plt.hist(error_poses, bins=30, alpha=0.7, label="Pose Error")
+    plt.xlabel("Pose Sync Error (seconds)")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of Pose Time Sync Error")
+    plt.legend()
+    plt.grid(True)
+    pose_hist_path = os.path.join(data_folder, "sync_errors_pose_hist.png")
+    plt.savefig(pose_hist_path)
+    plt.close()
+    print("Pose error histogram saved to:", pose_hist_path)
+
+    # Histogram for LiDAR Error Distribution
+    plt.figure(figsize=(10, 5))
+    plt.hist(error_lidars, bins=30, alpha=0.7, label="LiDAR Error", color='orange')
+    plt.xlabel("LiDAR Sync Error (seconds)")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of LiDAR Time Sync Error")
+    plt.legend()
+    plt.grid(True)
+    lidar_hist_path = os.path.join(data_folder, "sync_errors_lidar_hist.png")
+    plt.savefig(lidar_hist_path)
+    plt.close()
+    print("LiDAR error histogram saved to:", lidar_hist_path)
+
+    plt.show()
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize offline preprocessed data.")
-    parser.add_argument('--mode', choices=['image', 'lidar', 'pose'], required=True,
-                        help="Visualization mode: 'image', 'lidar', or 'pose'")
+    parser.add_argument('--mode', choices=['image', 'lidar', 'pose', 'sync_errors'], required=True,
+                        help="Visualization mode: 'image', 'lidar', 'pose', or 'sync_errors'")
     parser.add_argument('--folder', required=True,
                         help="Folder name (inside data/) to load the frames from")
     args = parser.parse_args()
@@ -248,6 +336,8 @@ def main():
         visualize_lidar(data_folder)
     elif args.mode == "pose":
         visualize_pose(data_folder)
+    elif args.mode == "sync_errors":
+        visualize_sync_errors(data_folder)
 
 if __name__ == '__main__':
     main()
