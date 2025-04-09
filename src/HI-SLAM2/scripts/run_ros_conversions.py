@@ -305,7 +305,6 @@ class HISLAM2Data:
             # Re-read in case new data arrived.
             pose_keys = sorted(self.pose_data.keys())
             best_pose = min(pose_keys, key=lambda t: abs(t - cam_time))
-            # best_pose = min(pose_keys, key=lambda t: abs(t - best_lidar)) # align pose to lidar
             lidar_keys = sorted(self.lidar_data.keys())
             best_lidar = min(lidar_keys, key=lambda t: abs(t - cam_time))
             
