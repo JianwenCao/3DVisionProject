@@ -247,7 +247,7 @@ class HISLAM2Data:
         with self.lock:
             self.lidar_data[stamp] = points
 
-    def pop_synced_data(self, tolerance=0.15, wait_for_sensors=1):
+    def pop_synced_data(self, tolerance = None, wait_for_sensors=1):
         """
         For the earliest camera frame, wait up to `wait_for_sensors` seconds for both a 
         pose and a LiDAR frame whose timestamps are within `tolerance` of the camera timestamp.
@@ -261,6 +261,8 @@ class HISLAM2Data:
         (sync_time, camera_tensor, pose_tensor, lidar_tensor) if a match is found,
         or None if no match is found.
         """
+        if tolerance is None:
+            raise ValueError("pop_synced_data() requires tolerance.")
         # Get the earliest camera frame as anchor.
         with self.lock:
             if not (self.camera_data and self.pose_data and self.lidar_data):
@@ -303,6 +305,7 @@ class HISLAM2Data:
             # Re-read in case new data arrived.
             pose_keys = sorted(self.pose_data.keys())
             best_pose = min(pose_keys, key=lambda t: abs(t - cam_time))
+            # best_pose = min(pose_keys, key=lambda t: abs(t - best_lidar)) # align pose to lidar
             lidar_keys = sorted(self.lidar_data.keys())
             best_lidar = min(lidar_keys, key=lambda t: abs(t - cam_time))
             
@@ -348,7 +351,7 @@ class HISLAM2Data:
 # ----------------------------
 # Sync Sensor Streams
 # ----------------------------
-def sync_thread(data_store, tolerance=0.15, wait=2):
+def sync_thread(data_store, tolerance=0.05, wait=2):
     """
     Continuously attempt to synchronize incoming sensor data.
     If a synchronized package is found, put it into the sync_queue.
@@ -373,6 +376,10 @@ def saving_thread(output_dir):
     """
     index = 0
     sync_errors_file = os.path.join(output_dir, "sync_errors.csv")
+    if not os.path.exists(sync_errors_file):
+        with open(sync_errors_file, 'w') as f:
+            f.write("frame_index,camera_timestamp,error_pose,error_lidar\n")
+    
     while True:
         try:
             # Wait for a synchronized package; timeout if none.
@@ -407,9 +414,6 @@ def saving_thread(output_dir):
             print("Error saving pose:", e)
 
         try:
-            if os.path.getsize(sync_errors_file) == 0:
-                with open(sync_errors_file, 'w') as f:
-                    f.write("frame_index,camera_timestamp,error_pose,error_lidar\n")
             with open(sync_errors_file, 'a') as f:
                 # frame_index, camera_timestamp, error_pose, error_lidar
                 f.write(f"{index},{stamp},{error_pose},{error_lidar}\n")
