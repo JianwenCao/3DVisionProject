@@ -27,17 +27,19 @@ Training:
   size_threshold: 10
   window_size: 10
   rgb_boundary_threshold: 0.03
-  compensate_exposure: true  # 可选改为 true 以支持曝光调整
+  compensate_exposure: true
   monocular: false
-  max_steps: 15000  # 添加最大迭代步数，用于颜色精炼
+  max_steps: 15000
 
 Dataset:
-  pcd_downsample: 128
-  pcd_downsample_init: 64
+  pcd_downsample: 1.43
+  pcd_downsample_init: 1.43
   point_size: 0.1
   adaptive_pointsize: true
-
-
+  scale_multiplier: 6.0
+  voxel_size_init: 2.0
+  voxel_size: 2.0
+  max_points_per_voxel: 10
 Tracking:
   motion_filter:
     thresh: 2.4

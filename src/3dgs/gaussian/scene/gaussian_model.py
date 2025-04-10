@@ -182,6 +182,87 @@ class GaussianModel:
 
         return fused_point_cloud, features, scales, rots, opacities
 
+    def create_pcd_from_lidar_points(self, cam, xyz, rgb, init=False):
+        if init:
+            voxel_size = self.config["Dataset"].get("voxel_size_init", 2.0)  # initial voxel size
+        else:
+            voxel_size = self.config["Dataset"].get("voxel_size", 2.0)  # voxel size
+        point_size = self.config["Dataset"]["point_size"]
+
+        # transform lidar point in world frame to camera frame
+        W2C = getWorld2View2(cam.R, cam.T).cpu().numpy()
+        points_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)
+        cam_points = points_homo @ W2C.T
+        xyz_cam = cam_points[:, :3]
+
+        pcd_tmp = o3d.geometry.PointCloud()
+        pcd_tmp.points = o3d.utility.Vector3dVector(xyz_cam)
+        pcd_tmp.colors = o3d.utility.Vector3dVector(rgb)
+
+        # Create octree
+        max_depth = 8  # Max depth for octree
+        octree = o3d.geometry.Octree(max_depth)
+        octree.convert_from_point_cloud(pcd_tmp, size_expand=0.01)
+
+        new_xyz = []
+        new_rgb = []
+
+        def traverse_octree(node, node_info):
+            if isinstance(node, o3d.geometry.OctreeLeafNode):
+                if isinstance(node, o3d.geometry.OctreePointColorLeafNode):
+                    indices = node.indices
+                    if len(indices) > 0:
+                        points = np.asarray(pcd_tmp.points)[indices]
+                        colors = np.asarray(pcd_tmp.colors)[indices]
+                        centroid = np.mean(points, axis=0)
+                        centroid_color = np.mean(colors, axis=0)
+                        new_xyz.append(centroid)
+                        new_rgb.append(centroid_color)
+
+        octree.traverse(traverse_octree)
+        new_xyz = np.array(new_xyz)
+        new_rgb = np.array(new_rgb)
+
+        if len(new_xyz) == 0:
+            print("No points found in octree, falling back to voxel downsampling.")
+            pcd_tmp = pcd_tmp.voxel_down_sample(voxel_size=voxel_size)
+            new_xyz = np.asarray(pcd_tmp.points)
+            new_rgb = np.asarray(pcd_tmp.colors)
+
+        pcd = BasicPointCloud(
+            points=new_xyz, colors=new_rgb, normals=np.zeros((new_xyz.shape[0], 3))
+        )
+        self.ply_input = pcd
+
+        fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
+        fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
+        features = (
+            torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2))
+            .float()
+            .cuda()
+        )
+        features[:, :3, 0] = fused_color
+        features[:, 3:, 1:] = 0.0
+
+        dist2 = (
+                torch.clamp_min(
+                    distCUDA2(fused_point_cloud),
+                    0.0000001,
+                )
+                * point_size
+        )
+        scales = torch.log(torch.sqrt(dist2))[..., None]
+        if not self.isotropic:
+            scales = scales.repeat(1, 3)
+
+        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+        rots[:, 0] = 1
+        opacities = inverse_sigmoid(
+            0.5 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
+        )
+
+        return fused_point_cloud, features, scales, rots, opacities
+
     def init_lr(self, spatial_lr_scale):
         self.spatial_lr_scale = spatial_lr_scale
 
@@ -218,6 +299,19 @@ class GaussianModel:
         fused_point_cloud, features, scales, rots, opacities = (
             self.create_pcd_from_image(cam_info, init, scale=scale, depthmap=depthmap)
         )
+        self.extend_from_pcd(
+            fused_point_cloud, features, scales, rots, opacities, kf_id
+        )
+
+    def extend_from_lidar_seq(
+        self, cam_info, kf_id=-1, init=False, pcd=None
+    ):
+        xyz = pcd[:, :3]
+        rgb = pcd[:, 3:6] / 255.0
+        fused_point_cloud, features, scales, rots, opacities = (
+            self.create_pcd_from_lidar_points(cam_info, xyz, rgb, init)
+        )
+
         self.extend_from_pcd(
             fused_point_cloud, features, scales, rots, opacities, kf_id
         )

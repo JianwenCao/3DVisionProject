@@ -12,7 +12,7 @@ from gaussian.renderer import render
 from gaussian.utils.loss_utils import l1_loss, ssim
 from gaussian.scene.gaussian_model import GaussianModel
 from gaussian.utils.graphics_utils import getProjectionMatrix2
-from gaussian.utils.slam_utils import update_pose, to_se3_vec, get_loss_mapping_rgbd  # Removed get_loss_normal
+from gaussian.utils.slam_utils import update_pose, to_se3_vec, get_loss_mapping_rgb
 from gaussian.utils.camera_utils import Camera
 from gaussian.utils.eval_utils import eval_rendering, eval_rendering_kf
 from gaussian.gui import gui_utils, slam_gui
@@ -101,7 +101,7 @@ class GSBackEnd(mp.Process):
             idx = packet['tstamp'][i].item()
             tstamp = packet['tstamp'][i].item()
             # Removed normals from Camera initialization
-            viewpoint = Camera.init_from_tracking(packet["images"][i] / 255.0, packet["depths"][i], None, w2c[i], idx,
+            viewpoint = Camera.init_from_tracking(packet["images"][i] / 255.0, None, None, w2c[i], idx,
                                                   self.projection_matrix, self.K, tstamp)
             if idx not in self.current_window:
                 self.current_window = [idx] + self.current_window[:-1] if len(self.current_window) > 10 else [idx] + self.current_window
@@ -109,12 +109,12 @@ class GSBackEnd(mp.Process):
                     print("Initializing map")
                     self.reset()
                     self.viewpoints[idx] = viewpoint
-                    self.add_next_kf(0, viewpoint, depth_map=packet["depths"][0].numpy(), init=True)
+                    self.add_next_kf(0, viewpoint, lidar_points=packet["points"][0].numpy(), init=True)
                     self.initialize_map(0, viewpoint)
                     self.initialized = True
                 elif idx not in self.viewpoints:
                     self.viewpoints[idx] = viewpoint
-                    self.add_next_kf(idx, viewpoint, depth_map=packet["depths"][i].numpy())
+                    self.add_next_kf(idx, viewpoint, lidar_points=packet["points"][i].numpy())
                 else:
                     self.viewpoints[idx] = viewpoint
 
@@ -131,7 +131,7 @@ class GSBackEnd(mp.Process):
                     keyframes=keyframes,
                     kf_window=current_window_dict,
                     gtcolor=viewpoint.original_image,
-                    gtdepth=viewpoint.depth.numpy()))
+                    gtdepth=None))
 
     def finalize(self):
         self.color_refinement(iteration_total=self.gaussians.max_steps)
@@ -152,9 +152,9 @@ class GSBackEnd(mp.Process):
                        self.projection_matrix, self.K, kf_idx, iteration="after_opt")
         eval_rendering_kf(self.viewpoints, self.gaussians, self.save_dir, self.background, iteration="after_opt")
 
-    def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
-        self.gaussians.extend_from_pcd_seq(
-            viewpoint, kf_id=frame_idx, init=init, scale=scale, depthmap=depth_map
+    def add_next_kf(self, frame_idx, viewpoint, init=False, lidar_points=None):
+        self.gaussians.extend_from_lidar_seq(
+            viewpoint, kf_id=frame_idx, init=init, pcd=lidar_points
         )
 
     def reset(self):
@@ -167,16 +167,14 @@ class GSBackEnd(mp.Process):
         for mapping_iteration in range(self.init_itr_num):
             self.iteration_count += 1
             render_pkg = render(viewpoint, self.gaussians, self.background)
-            (image, viewspace_point_tensor, visibility_filter, radii, depth, n_touched) = (
+            (image, viewspace_point_tensor, visibility_filter, radii, n_touched) = (
                 render_pkg["render"],
                 render_pkg["viewspace_points"],
                 render_pkg["visibility_filter"],
                 render_pkg["radii"],
-                render_pkg["depth"],
                 render_pkg["n_touched"]
             )
-            loss_init = get_loss_mapping_rgbd(self.config, image, depth, viewpoint)
-            # loss_init = get_loss_mapping_rgbd(self.config, image, viewpoint)
+            loss_init = get_loss_mapping_rgb(self.config, image, viewpoint)
             loss_init.backward()
 
             with torch.no_grad():
@@ -228,18 +226,15 @@ class GSBackEnd(mp.Process):
                                             torch.randperm(len(random_viewpoint_stack))[:2]]
             for viewpoint in viewpoints:
                 render_pkg = render(viewpoint, self.gaussians, self.background)
-                image, viewspace_point_tensor, visibility_filter, radii, depth, n_touched = (
+                image, viewspace_point_tensor, visibility_filter, radii, n_touched = (
                     render_pkg["render"],
                     render_pkg["viewspace_points"],
                     render_pkg["visibility_filter"],
                     render_pkg["radii"],
-                    render_pkg["depth"],
                     render_pkg["n_touched"])
 
-                # Commented out normal loss
                 # loss_mapping += self.lambda_dnormal * get_loss_normal(depth, viewpoint) / 10.
-                loss_mapping += get_loss_mapping_rgbd(self.config, image, depth, viewpoint)
-                # loss_mapping += get_loss_mapping_rgbd(self.config, image, viewpoint)
+                loss_mapping += get_loss_mapping_rgb(self.config, image, viewpoint)
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
@@ -305,14 +300,13 @@ class GSBackEnd(mp.Process):
             viewpoint_cam_idx = viewpoint_idx_stack.pop(random.randint(0, len(viewpoint_idx_stack) - 1))
             viewpoint_cam = self.viewpoints[viewpoint_cam_idx]
             render_pkg = render(viewpoint_cam, self.gaussians, self.background)
-            image, depth = render_pkg["render"], render_pkg["depth"]
+            image= render_pkg["render"]
             image = (torch.exp(viewpoint_cam.exposure_a)) * image + viewpoint_cam.exposure_b
 
             gt_image = viewpoint_cam.original_image.cuda()
             loss = (1.0 - self.opt_params.lambda_dssim) * l1_loss(image, gt_image) + self.opt_params.lambda_dssim * (
                         1.0 - ssim(image, gt_image))
-            loss += get_loss_mapping_rgbd(self.config, image, depth, viewpoint_cam)
-            # loss += get_loss_mapping_rgbd(self.config, image, viewpoint_cam)
+            loss += get_loss_mapping_rgb(self.config, image, viewpoint_cam)
 
             # Commented out normal loss in color refinement
             # if iteration < 7000:
