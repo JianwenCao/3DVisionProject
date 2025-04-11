@@ -136,9 +136,6 @@ def decode_rgb_pointcloud(msg):
         # Concatenate all rows into one array of shape (height*width,).
         points = np.concatenate(all_points, axis=0)
         
-        # Extract x,y,z.
-        xyz = np.stack((points['x'], points['y'], points['z']), axis=1)
-        
         # Unpack rgb
         rgb_float = points['rgb']
         rgb_uint = rgb_float.view(np.uint32)
@@ -147,10 +144,9 @@ def decode_rgb_pointcloud(msg):
         g = ((rgb_uint >> 8) & 0xFF).astype(np.float32)
         b = (rgb_uint & 0xFF).astype(np.float32)
         
-        # xyz and rgb => shape (N,6).
-        rgb_arr = np.stack((r, g, b), axis=1)
-        result = np.concatenate((xyz, rgb_arr), axis=1)
-        
+        result = np.empty((points.shape[0], 6), dtype=np.float32)
+        result[:, 0:3] = np.stack((points['x'], points['y'], points['z']), axis=1)
+        result[:, 3:6] = np.stack((r, g, b), axis=1)
         return result
     except Exception as e:
         logger.error("Error decoding colorized pointcloud: %s", e)
@@ -294,7 +290,7 @@ class HISLAM2Data:
             time.sleep(0.005)  # Wait before checking again
         
         if diff_pose > tolerance or diff_lidar > tolerance:
-            logger.debug(f"[SYNC] Discarding camera frame at {cam_time:.9f}: pose diff = {diff_pose:.9f}, lidar diff = {diff_lidar:.9f}")
+            logger.warning(f"[SYNC] Discarding camera frame at {cam_time:.9f}: pose diff = {diff_pose:.9f}, lidar diff = {diff_lidar:.9f}")
             with self.lock:
                 if cam_time in self.camera_data:
                     del self.camera_data[cam_time]
