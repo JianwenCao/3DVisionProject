@@ -5,3 +5,5 @@ src/Sophus/build/
 .catkin_tools/profiles/default
 /src/3dgs/output/
 .idea
+
+src/3dgs/**/__pycache__/

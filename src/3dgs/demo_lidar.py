@@ -140,8 +140,13 @@ if __name__ == '__main__':
     mp.set_start_method('spawn')
     torchvision.disable_beta_transforms_warning()
 
-    num_frames = 1013
-    dataset_path = "../../dataset/red_sculpture_dense"
+    # num_frames = 1013
+    # dataset_path = "../../dataset/red_sculpture_dense"
+    # config_path = "../../config/config_lidar.yaml"
+
+    # Elliot testing
+    num_frames = 100 # normally 1013
+    dataset_path = "../HI-SLAM2/data/red_sculpture_dense_fixed"
     config_path = "../../config/config_lidar.yaml"
 
     queue = mp.Queue(maxsize=8)
