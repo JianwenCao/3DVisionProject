@@ -39,3 +39,5 @@ dependencies:
     - glfw
     - glm==0.4.3
     - roslibpy
+    - torch-cluster
+    - transformers
