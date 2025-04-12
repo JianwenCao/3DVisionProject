@@ -24,6 +24,9 @@ import queue
 import os
 import logging
 
+import multiprocessing as mp
+from multiprocessing import shared_memory
+
 # ----------------------------
 # Queues for asynchronous processing
 # ----------------------------
@@ -83,12 +86,7 @@ point_dtype_32 = np.dtype([
 
 def decode_rgb_pointcloud(msg):
     """
-    Decodes FAST-LIVO2 PointCloudXYZRGB (sensor_msgs/PointCloud2) with:
-      - point_step = 32 bytes
-      - fields: x, y, z, intensity, rgb (packed as float), plus 12 bytes padding
-      - possibly multi-row (height>1), each row has row_step bytes
-    Returns:
-      A NumPy array of shape (N,6) -> columns: [x,y,z,r,g,b].
+    Decodes FAST-LIVO2 PointCloudXYZRGB with improved memory efficiency using memoryview.
     """
     try:
         raw_data = msg.get('data', '')
@@ -97,16 +95,17 @@ def decode_rgb_pointcloud(msg):
         
         if isinstance(raw_data, str):
             data_bytes = base64.b64decode(raw_data)
-            # logger.debug("Decoded pointcloud data from base64 string.")
         elif isinstance(raw_data, (bytes, bytearray)):
             data_bytes = raw_data
         else:
-            # If it's a list of floats, convert to bytes.
             if isinstance(raw_data, list):
                 data_array = np.array(raw_data, dtype=np.float32)
                 data_bytes = data_array.tobytes()
             else:
                 raise ValueError(f"Unexpected type for pointcloud data: {type(raw_data)}")
+        
+        # Use memoryview to avoid unnecessary copies
+        data_view = memoryview(data_bytes)
         
         # Parse metadata
         height = msg.get('height', 1)
@@ -118,35 +117,36 @@ def decode_rgb_pointcloud(msg):
         if width == 0:
             width = len(data_bytes) // point_step
         
-        all_points = []
-        for row_i in range(height):
-            start = row_i * row_step
-            end = start + row_step
-            row_data = data_bytes[start:end]
-            
-            # Convert row_data to a structured array with our 32-byte dtype.
-            row_points = np.frombuffer(row_data, dtype=point_dtype_32)
-            
-            # If big-endian, byteswap in place:
+        # Fast path for single row (common case)
+        if height == 1:
+            points = np.frombuffer(data_view, dtype=point_dtype_32)
             if is_bigendian:
-                row_points = row_points.byteswap().newbyteorder()
-            
-            all_points.append(row_points)
+                points = points.byteswap().newbyteorder()
+        else:
+            all_points = []
+            for row_i in range(height):
+                start = row_i * row_step
+                end = start + row_step
+                # Use memoryview slicing instead of array slicing
+                row_view = data_view[start:end]
+                row_points = np.frombuffer(row_view, dtype=point_dtype_32)
+                if is_bigendian:
+                    row_points = row_points.byteswap().newbyteorder()
+                all_points.append(row_points)
+            points = np.concatenate(all_points, axis=0)
         
-        # Concatenate all rows into one array of shape (height*width,).
-        points = np.concatenate(all_points, axis=0)
-        
-        # Unpack rgb
+        # Unpack rgb with optimized view
         rgb_float = points['rgb']
         rgb_uint = rgb_float.view(np.uint32)
-        # Extract channels (assuming 0x00RRGGBB).
         r = ((rgb_uint >> 16) & 0xFF).astype(np.float32)
         g = ((rgb_uint >> 8) & 0xFF).astype(np.float32)
         b = (rgb_uint & 0xFF).astype(np.float32)
         
+        # Pre-allocate result array
         result = np.empty((points.shape[0], 6), dtype=np.float32)
         result[:, 0:3] = np.stack((points['x'], points['y'], points['z']), axis=1)
         result[:, 3:6] = np.stack((r, g, b), axis=1)
+        
         return result
     except Exception as e:
         logger.error("Error decoding colorized pointcloud: %s", e)
@@ -203,19 +203,190 @@ def process_pose_queue(data_store):
             logger.error("Pose processing error: %s", e)
         pose_queue.task_done()
 
-def process_lidar_queue(data_store):
+def process_lidar_in_shared_memory():
+    """
+    Creates a separate process for LiDAR decoding using shared memory for efficient data transfer.
+    """
+    # Create a process-safe queue for metadata
+    metadata_queue = mp.Queue()
+    result_queue = mp.Queue()
+    
+    # Start the decoder process
+    decoder_process = mp.Process(
+        target=lidar_decoder_worker,
+        args=(metadata_queue, result_queue),
+        daemon=True
+    )
+    decoder_process.start()
+    
+    def process_lidar_queue(data_store):
+        while True:
+            msg = lidar_queue.get()
+            process_start = time.perf_counter()
+            
+            try:
+                # Decode the basic metadata first
+                raw_data = msg.get('data', '')
+                if isinstance(raw_data, dict):
+                    raw_data = raw_data.get('data', '')
+                
+                if isinstance(raw_data, str):
+                    data_bytes = base64.b64decode(raw_data)
+                elif isinstance(raw_data, (bytes, bytearray)):
+                    data_bytes = raw_data
+                else:
+                    if isinstance(raw_data, list):
+                        data_array = np.array(raw_data, dtype=np.float32)
+                        data_bytes = data_array.tobytes()
+                    else:
+                        raise ValueError(f"Unexpected pointcloud data type: {type(raw_data)}")
+                
+                # Parse minimal metadata needed
+                height = msg.get('height', 1)
+                width = msg.get('width', 0)
+                point_step = msg.get('point_step', 32)
+                if width == 0:
+                    width = len(data_bytes) // point_step
+                
+                # Calculate expected size for the point cloud data
+                estimated_points = height * width
+                estimated_size = estimated_points * 6 * 4  # 6 floats per point, 4 bytes per float
+                
+                # Create shared memory for the decoded result
+                shm = shared_memory.SharedMemory(create=True, size=estimated_size)
+                
+                # Put the raw data and metadata into the queue for processing
+                stamp = get_full_timestamp(msg)
+                metadata_queue.put({
+                    'data_bytes': data_bytes,
+                    'height': height,
+                    'width': width,
+                    'point_step': point_step,
+                    'row_step': msg.get('row_step', point_step * width),
+                    'is_bigendian': msg.get('is_bigendian', False),
+                    'shm_name': shm.name,
+                    'timestamp': stamp
+                })
+                
+                # Wait for the result
+                result = result_queue.get()
+                if result['success']:
+                    # Create a numpy array from shared memory
+                    result_shape = result['shape']
+                    result_array = np.ndarray(
+                        shape=result_shape,
+                        dtype=np.float32,
+                        buffer=shm.buf
+                    )
+                    
+                    # Copy to a new array to ensure we own the memory
+                    result_copy = np.array(result_array, copy=True)
+                    
+                    # Close and unlink the shared memory
+                    shm.close()
+                    shm.unlink()
+                    
+                    # Convert to tensor and store
+                    pc_tensor = torch.from_numpy(result_copy).float()
+                    data_store.store_lidar(stamp, pc_tensor)
+                    
+                    process_end = time.perf_counter()
+                    logger.debug(f"[LiDAR] Processed {result_shape[0]} points @ timestamp {stamp:.9f} | "
+                                f"Took {(process_end - process_start)*1000:.2f} ms")
+                else:
+                    logger.error(f"LiDAR processing error: {result['error']}")
+                    # Clean up shared memory on error
+                    shm.close()
+                    shm.unlink()
+            except Exception as e:
+                logger.error(f"Error in lidar queue processing: {e}")
+                # Handle any shared memory cleanup if an exception occurred
+                if 'shm' in locals():
+                    try:
+                        shm.close()
+                        shm.unlink()
+                    except:
+                        pass
+            
+            lidar_queue.task_done()
+    
+    return process_lidar_queue
+
+def lidar_decoder_worker(metadata_queue, result_queue):
+    """
+    Worker process that decodes point cloud data from shared memory.
+    """
     while True:
-        msg = lidar_queue.get()
-        process_start = time.perf_counter()
-        pc_decoded = decode_rgb_pointcloud(msg)
-        if pc_decoded is not None:
-            pc_tensor = torch.from_numpy(pc_decoded).float()
-            stamp = get_full_timestamp(msg)
-            data_store.store_lidar(stamp, pc_tensor)
-            process_end = time.perf_counter()
-            logger.debug(f"[LiDAR] Processed {pc_tensor.shape[0]} points @ timestamp {stamp:.9f} | "
-                         f"Took {(process_end - process_start)*1000:.2f} ms")
-        lidar_queue.task_done()
+        try:
+            # Get metadata from the queue
+            metadata = metadata_queue.get()
+            
+            # Access the shared memory
+            shm_name = metadata['shm_name']
+            shm = shared_memory.SharedMemory(name=shm_name)
+            
+            # Process the raw data
+            data_bytes = metadata['data_bytes']
+            height = metadata['height']
+            width = metadata['width']
+            point_step = metadata['point_step']
+            row_step = metadata['row_step']
+            is_bigendian = metadata['is_bigendian']
+            
+            # Use memory view for efficient access
+            data_view = memoryview(data_bytes)
+            
+            try:
+                # Fast path for single row (common case)
+                if height == 1:
+                    points = np.frombuffer(data_view, dtype=point_dtype_32)
+                    if is_bigendian:
+                        points = points.byteswap().newbyteorder()
+                else:
+                    all_points = []
+                    for row_i in range(height):
+                        start = row_i * row_step
+                        end = start + row_step
+                        row_view = data_view[start:end]
+                        row_points = np.frombuffer(row_view, dtype=point_dtype_32)
+                        if is_bigendian:
+                            row_points = row_points.byteswap().newbyteorder()
+                        all_points.append(row_points)
+                    points = np.concatenate(all_points, axis=0)
+                
+                # Extract xyz and rgb
+                xyz = np.stack((points['x'], points['y'], points['z']), axis=1)
+                
+                rgb_float = points['rgb']
+                rgb_uint = rgb_float.view(np.uint32)
+                r = ((rgb_uint >> 16) & 0xFF).astype(np.float32)
+                g = ((rgb_uint >> 8) & 0xFF).astype(np.float32)
+                b = (rgb_uint & 0xFF).astype(np.float32)
+                
+                # Create the result array directly in shared memory
+                result_shape = (points.shape[0], 6)
+                result_array = np.ndarray(
+                    shape=result_shape,
+                    dtype=np.float32,
+                    buffer=shm.buf
+                )
+                
+                # Write the data to shared memory
+                result_array[:, 0:3] = xyz
+                result_array[:, 3:6] = np.stack((r, g, b), axis=1)
+                
+                # Return success and shape info
+                result_queue.put({
+                    'success': True,
+                    'shape': result_shape
+                })
+            except Exception as e:
+                result_queue.put({
+                    'success': False,
+                    'error': str(e)
+                })
+        except Exception as e:
+            print(f"Error in lidar decoder worker: {e}")
 
 
 # ----------------------------
@@ -469,7 +640,7 @@ class HISLAM2BridgeClient:
 
         threading.Thread(target=process_image_queue, args=(self.data_store,), daemon=True).start()
         threading.Thread(target=process_pose_queue, args=(self.data_store,), daemon=True).start()
-        threading.Thread(target=process_lidar_queue, args=(self.data_store,), daemon=True).start()
+        threading.Thread(target=process_lidar_in_shared_memory(), args=(self.data_store,), daemon=True).start()
         threading.Thread(target=sync_thread, args=(self.data_store,), daemon=True).start()
 
         if self.mode == 'preprocess':

@@ -226,14 +226,17 @@ def visualize_pose(data_folder):
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
     ax.legend()
-    plt.show()
+    save_path = os.path.join(data_folder, "pose_trajectory.png")
+    plt.savefig(save_path)
+    print("Pose trajectory plot saved to:", save_path)
+    plt.close()
 
 def visualize_sync_errors(data_folder):
     """
     Visualize the synchronization errors.
 
     Expects a file named 'sync_errors.csv' in the data_folder with CSV-formatted lines:
-      frame_index,camera_timestamp,error_pose,error_lidar
+    frame_index,camera_timestamp,error_pose,error_lidar
 
     This function creates three plots:
       1. A time series plot of both pose and LiDAR errors (with frame index on the x-axis).
