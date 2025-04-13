@@ -9,7 +9,13 @@ from PIL import Image
 import torchvision
 import time
 
-def pose_to_extrinsic(tx, ty, tz, qx, qy, qz, qw):
+def fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw):
+    """
+    Convert FASTLIVO coordinate system pose (tx, ty, tz, qx, qy, qz, qw) to extrinsic in GS frame.
+    From camera's POV:
+    - FASTLIVO coordinate system: x-forward, y-left, z-up
+    - GS / Lietorch: x-right, y-down, z-forward
+    """
     def quaternion_to_rotation_matrix(qx, qy, qz, qw):
         norm = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
         qx, qy, qz, qw = qx/norm, qy/norm, qz/norm, qw/norm
@@ -29,12 +35,22 @@ def pose_to_extrinsic(tx, ty, tz, qx, qy, qz, qw):
     extrinsic[:3, 3] = t_B
     return torch.tensor(extrinsic, dtype=torch.float32)
 
-def extrinsic_to_pose(T):
+def extrinsic_to_tensor(T):
     t = T[:3, 3]
     R_mat = T[:3, :3]
     r = R.from_matrix(R_mat)
     q = r.as_quat()
     return torch.tensor([t[0], t[1], t[2], q[0], q[1], q[2], q[3]])
+
+def transform_points(points):
+    """
+    Transform points from FASTLIVO to GS world frame.
+    Points dimension (6, N), rows 0-5 are x, y, z, r, g, b.
+    """
+    T = torch.eye(points.shape[1], dtype=torch.float32)
+    T[:3, :3] = torch.tensor([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=torch.float32)
+    transformed_points = (T @ points.T).T
+    return transformed_points
 
 def data_loader(queue, num_frames, dataset_path):
     batch_size = 10
@@ -45,16 +61,17 @@ def data_loader(queue, num_frames, dataset_path):
         image = torch.tensor(np.array(image_pil)).permute(2, 0, 1).cpu()
 
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-        extrinsic = pose_to_extrinsic(tx, ty, tz, qx, qy, qz, qw)
-        pose = extrinsic_to_pose(extrinsic)
+        extrinsic = fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw)
+        c2w_gs = torch.inverse(extrinsic)
+        pose = extrinsic_to_tensor(c2w_gs)
         intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
         lidar_points = torch.tensor(np.load(f"{dataset_path}/frame{i}/points.npy"))
-
+        transformed_lidar_points = transform_points(lidar_points)
 
         batch_data["images"].append(image)
         batch_data["poses"].append(pose)
         batch_data["intrinsics"].append(intrinsics)
-        batch_data["points"].append(lidar_points)
+        batch_data["points"].append(transformed_lidar_points)
         batch_data["tstamp"].append(i)
 
         if len(batch_data["tstamp"]) == batch_size or i == num_frames - 1:
