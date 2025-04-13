@@ -320,10 +320,210 @@ def visualize_sync_errors(data_folder):
 
     plt.show()
 
+def visualize_reprojection(data_folder):
+    """
+    Visualize the reprojection of LiDAR points into the corresponding camera image.
+
+    For each frame, the function:
+      - Loads the camera image.
+      - Loads the pose (assumed to be a 7-element tensor [tx, ty, tz, qx, qy, qz, qw] stored in pose.pt).
+      - Loads the LiDAR points (assumed to be an (N,6) numpy array: columns [x, y, z, r, g, b]).
+      - Constructs the world-to-camera transformation from the pose (the pose is in FASTLIVO camera-to-world form).
+      - Converts the resulting camera coordinates from FASTLIVO 
+        (x: forward, y: left, z: up) to the standard projection system (GS: x right, y down, z forward)
+        using a conversion matrix T_conv.
+      - Projects the LiDAR points to the image plane using the intrinsic matrix.
+      - Computes two error metrics:
+            * The percentage of valid points that fall outside the image.
+            * The total count of valid points that are out-of-frame.
+      - Displays a single window with four subplots:
+           Top-left: the image with overlaid projected points.
+           Top-right: a 3D view (in the camera frame) with fixed axis limits, seen from above and slightly behind.
+           Bottom-left: plot of out-of-frame percentage vs. frame index.
+           Bottom-right: plot of total out-of-frame count vs. frame index.
+      - Allows navigation between frames using the left/right arrow keys.
+    """
+    frame_dirs = get_sorted_frame_dirs(data_folder)
+    if not frame_dirs:
+        print("No frame directories found in", data_folder)
+        return
+
+    # Load camera intrinsics from intrinsics.txt (assumed to be in data_folder)
+    intrinsics_path = os.path.join(data_folder, "intrinsics.txt")
+    if os.path.exists(intrinsics_path):
+        K_vals = np.loadtxt(intrinsics_path)
+        fx, fy, cx, cy = K_vals[0], K_vals[1], K_vals[2], K_vals[3]
+        if len(K_vals) >= 6:
+            W, H = int(K_vals[4]), int(K_vals[5])
+        else:
+            sample_img_path = os.path.join(data_folder, frame_dirs[0], "image.png")
+            sample_img = cv2.imread(sample_img_path)
+            if sample_img is None:
+                print("Could not load sample image to infer dimensions.")
+                return
+            H, W, _ = sample_img.shape
+    else:
+        print("intrinsics.txt not found in", data_folder)
+        return
+
+    intrinsic_matrix = np.array([[fx, 0, cx],
+                                 [0, fy, cy],
+                                 [0,  0,  1]])
+
+    # Conversion matrix: from FASTLIVO (camera native, x: forward, y: left, z: up)
+    # to standard projection (GS: x right, y down, z forward)
+    T_conv = np.array([[0, -1, 0],
+                       [0,  0, -1],
+                       [1,  0,  0]])
+
+    n_frames = len(frame_dirs)
+    errors_pct = [np.nan] * n_frames       # percentage of valid points out-of-frame
+    errors_total = [np.nan] * n_frames       # total count out-of-frame
+    current_idx = [0]  # mutable container for current frame index
+
+    # Create a figure with a 2x2 grid:
+    # Top-left: image with reprojected LiDAR points.
+    # Top-right: 3D view.
+    # Bottom-left: error percentage plot.
+    # Bottom-right: error total count plot.
+    import matplotlib.gridspec as gridspec
+    fig = plt.figure(figsize=(15, 10))
+    gs = gridspec.GridSpec(2, 2)
+    ax_img = fig.add_subplot(gs[0, 0])
+    ax_3d = fig.add_subplot(gs[0, 1], projection='3d')
+    ax_err_pct = fig.add_subplot(gs[1, 0])
+    ax_err_total = fig.add_subplot(gs[1, 1])
+
+    def update_display():
+        frame = frame_dirs[current_idx[0]]
+        img_path = os.path.join(data_folder, frame, "image.png")
+        pose_path = os.path.join(data_folder, frame, "pose.pt")
+        lidar_path = os.path.join(data_folder, frame, "points.npy")
+        if not (os.path.exists(img_path) and os.path.exists(pose_path) and os.path.exists(lidar_path)):
+            print(f"Missing data in {frame}, skipping.")
+            return
+
+        # Load image (BGR -> RGB)
+        img_bgr = cv2.imread(img_path)
+        if img_bgr is None:
+            print(f"Could not load image {img_path}")
+            return
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+        # Load pose and LiDAR points
+        pose = torch.load(pose_path).cpu().numpy()   # shape: (7,)
+        points = np.load(lidar_path)                   # shape: (N,6)
+
+        t = pose[:3]
+        q = pose[3:]
+        # Compute rotation matrix from quaternion (FASTLIVO convention)
+        R_fast = quaternion_to_rotation_matrix(q)
+        # Construct camera-to-world transform in FASTLIVO coordinates.
+        T_cam_to_world = np.eye(4)
+        T_cam_to_world[:3, :3] = R_fast
+        T_cam_to_world[:3, 3] = t
+        # Invert to get world-to-camera transform.
+        R_world_to_cam = R_fast.T
+        t_world_to_cam = -R_fast.T @ t
+        T_world_to_cam = np.eye(4)
+        T_world_to_cam[:3, :3] = R_world_to_cam
+        T_world_to_cam[:3, 3] = t_world_to_cam
+
+        # Reproject LiDAR points.
+        # LiDAR points (in world coordinates, FASTLIVO) are in an (N,6) array.
+        lidar_xyz = points[:, :3]
+        colors = points[:, 3:6] / 255.0
+
+        ones = np.ones((lidar_xyz.shape[0], 1))
+        lidar_hom = np.hstack((lidar_xyz, ones))  # (N,4)
+        # Transform to camera coordinates (FASTLIVO)
+        cam_coords_fast = (T_world_to_cam @ lidar_hom.T).T  # (N,4)
+
+        # For reprojection, convert from FASTLIVO to standard (GS) coordinates.
+        cam_coords_gs = (T_conv @ cam_coords_fast[:, :3].T).T  # (N,3)
+        valid_proj = cam_coords_gs[:, 2] > 0.1  # positive depth in GS coordinates
+        cam_coords_gs_valid = cam_coords_gs[valid_proj]
+        colors_valid = colors[valid_proj]
+
+        # Pin-hole projection:
+        X, Y, Z = cam_coords_gs_valid[:, 0], cam_coords_gs_valid[:, 1], cam_coords_gs_valid[:, 2]
+        u = fx * (X / Z) + cx
+        v = fy * (Y / Z) + cy
+
+        # Compute error metrics:
+        out_of_bounds = ((u < 0) | (u > W) | (v < 0) | (v > H))
+        total_valid = len(u)
+        total_out = np.sum(out_of_bounds) if total_valid > 0 else 0
+        err_pct = 100.0 * total_out / total_valid if total_valid > 0 else np.nan
+        errors_pct[current_idx[0]] = err_pct
+        errors_total[current_idx[0]] = total_out
+
+        # Update top-left subplot: Image with projected points.
+        ax_img.clear()
+        ax_img.imshow(img_rgb)
+        ax_img.scatter(u, v, s=2, c=colors_valid, marker='o', edgecolors='none')
+        ax_img.set_title(f"Frame {frame} | Out-of-Bounds: {err_pct:.1f}% ({total_out} pts)")
+        ax_img.axis('off')
+
+        # Update top-right subplot: 3D view in camera coordinates (FASTLIVO).
+        ax_3d.clear()
+        # For the 3D view, show points in cam_coords_fast (without homogeneous coordinate)
+        valid_3d = cam_coords_fast[:, 0] > 0.1  # show points in front of the camera (x positive)
+        pts_3d = cam_coords_fast[valid_3d][:, :3]
+        colors_3d = colors[valid_3d]
+        if pts_3d.shape[0] > 0:
+            ax_3d.scatter(pts_3d[:, 0], pts_3d[:, 1], pts_3d[:, 2],
+                          c=colors_3d, s=2, marker='o')
+        ax_3d.set_title("3D View (Camera Frame)")
+        ax_3d.set_xlabel("X (forward)")
+        ax_3d.set_ylabel("Y (left)")
+        ax_3d.set_zlabel("Z (up)")
+        # Set fixed limits for easy comparison (adjust these as needed).
+        ax_3d.set_xlim([0, 70])
+        ax_3d.set_ylim([-10, 10])
+        ax_3d.set_zlim([-10, 10])
+        # Change view: looking from above and slightly behind the camera.
+        ax_3d.view_init(elev=30, azim=-125)
+
+        # Update bottom-left subplot: Error percentage vs. frame index.
+        x_vals = np.arange(n_frames)
+        ax_err_pct.clear()
+        ax_err_pct.plot(x_vals, errors_pct, marker='o', linestyle='-', color='b')
+        ax_err_pct.set_xlabel("Frame Index")
+        ax_err_pct.set_ylabel("Out-of-Bounds (%)", color='b')
+        ax_err_pct.set_title("Reprojection Error (%) vs. Frame")
+        ax_err_pct.set_xlim(0, n_frames-1)
+        ax_err_pct.grid(True)
+
+        # Update bottom-right subplot: Total out-of-frame count vs. frame index.
+        ax_err_total.clear()
+        ax_err_total.plot(x_vals, errors_total, marker='x', linestyle='--', color='r')
+        ax_err_total.set_xlabel("Frame Index")
+        ax_err_total.set_ylabel("Total Out-of-Frame", color='r')
+        ax_err_total.set_title("Total Out-of-Frame Count vs. Frame")
+        ax_err_total.set_xlim(0, n_frames-1)
+        ax_err_total.grid(True)
+
+        fig.canvas.draw_idle()
+
+    def on_key(event):
+        if event.key == 'right':
+            current_idx[0] = (current_idx[0] + 1) % n_frames
+            update_display()
+        elif event.key == 'left':
+            current_idx[0] = (current_idx[0] - 1) % n_frames
+            update_display()
+
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    update_display()
+    plt.show()
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize offline preprocessed data.")
-    parser.add_argument('--mode', choices=['image', 'lidar', 'pose', 'sync_errors'], required=True,
-                        help="Visualization mode: 'image', 'lidar', 'pose', or 'sync_errors'")
+    parser.add_argument('--mode', choices=['image', 'lidar', 'pose', 'sync_errors', 'reproj'], required=True,
+                        help="Visualization mode: 'image', 'lidar', 'pose', 'sync_errors', or 'reproj'")
     parser.add_argument('--folder', required=True,
                         help="Folder name (inside data/) to load the frames from")
     args = parser.parse_args()
@@ -341,6 +541,8 @@ def main():
         visualize_pose(data_folder)
     elif args.mode == "sync_errors":
         visualize_sync_errors(data_folder)
+    elif args.mode == "reproj":
+        visualize_reprojection(data_folder)
 
 if __name__ == '__main__':
     main()
