@@ -42,15 +42,60 @@ def extrinsic_to_tensor(T):
     q = r.as_quat()
     return torch.tensor([t[0], t[1], t[2], q[0], q[1], q[2], q[3]])
 
+
 def transform_points(points):
     """
-    Transform points from FASTLIVO to GS world frame.
-    Points dimension (6, N), rows 0-5 are x, y, z, r, g, b.
+    Transform points from FAST-LIVO2 to GS world frame.
+    Points dimension (N, 6), rows are points, columns 0-5 are x, y, z, r, g, b.
+    FAST-LIVO2: x-forward, y-left, z-up
+    GS-LIVO2: x-right, y-down, z-forward
     """
-    T = torch.eye(points.shape[1], dtype=torch.float32)
-    T[:3, :3] = torch.tensor([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=torch.float32)
+    T = torch.eye(6, dtype=torch.float32)
+    T[:3, :3] = torch.tensor([[0, 1, 0],   # y -> x
+                              [0, 0, -1],  # z -> -y
+                              [1, 0, 0]],  # x -> z
+                             dtype=torch.float32)
     transformed_points = (T @ points.T).T
     return transformed_points
+
+def project_lidar_to_depth(points, pose, intrinsic, H=512, W=640, max_depth=80):
+    """Project LiDAR points to depth map in GS coordinate system."""
+    fx, fy, cx, cy = intrinsic
+    points_xyz = points[:, :3]  # Extract x, y, z
+    points_homo = torch.cat([points_xyz, torch.ones(points_xyz.shape[0], 1, device=points.device)], dim=1)
+
+    # Convert pose to extrinsic (c2w in GS frame)
+    tx, ty, tz, qx, qy, qz, qw = pose.tolist()
+    w2c = torch.inverse(fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw))  # GS uses c2w, so invert to w2c
+
+    # Transform points to camera frame
+    cam_points = torch.matmul(points_homo, w2c.T)
+    depths = cam_points[:, 2]
+    valid = (depths > 0.1) & (depths < max_depth)
+    cam_points = cam_points[valid]
+    depths = depths[valid]
+
+    if len(depths) == 0:
+        return torch.zeros(H, W, device=points.device)
+
+    x_norm = cam_points[:, 0] / depths
+    y_norm = cam_points[:, 1] / depths
+    u = fx * x_norm + cx
+    v = fy * y_norm + cy
+
+    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    u = u[valid].long()
+    v = v[valid].long()
+    depths = depths[valid]
+
+    depth_map = torch.zeros(H, W, device=points.device)
+    if valid.sum() > 0:
+        sorted_indices = torch.argsort(depths, descending=True)
+        u = u[sorted_indices]
+        v = v[sorted_indices]
+        depths = depths[sorted_indices]
+        depth_map[v, u] = depths
+    return depth_map
 
 def data_loader(queue, num_frames, dataset_path):
     batch_size = 10
@@ -110,7 +155,7 @@ if __name__ == '__main__':
 
     processed_frames = 0
     frame_counter = 0
-    step = 20  # step for keyframe selection
+    step = 5  # step for keyframe selection
 
     while processed_frames < num_frames:
         packet = queue.get()

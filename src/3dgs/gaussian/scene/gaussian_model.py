@@ -27,6 +27,7 @@ from gaussian.utils.general_utils import (
 )
 from gaussian.utils.graphics_utils import BasicPointCloud, getWorld2View2
 from gaussian.utils.sh_utils import RGB2SH
+from scipy.spatial.transform import Rotation as R
 
 
 class GaussianModel:
@@ -110,48 +111,78 @@ class GaussianModel:
 
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
 
-    def create_pcd_from_image_and_depth(self, cam, rgb, depth, init=False):
+    def create_pcd_from_lidar_points(self, cam, xyz, rgb, init=False):
         if init:
-            downsample_factor = self.config["Dataset"]["pcd_downsample_init"]
+            voxel_size = self.config["Dataset"].get("voxel_size_init", 2.0)
         else:
-            downsample_factor = self.config["Dataset"]["pcd_downsample"]
+            voxel_size = self.config["Dataset"].get("voxel_size", 2.0)
         point_size = self.config["Dataset"]["point_size"]
-        if "adaptive_pointsize" in self.config["Dataset"]:
-            if self.config["Dataset"]["adaptive_pointsize"]:
-                point_size = min(0.05, point_size * np.median(depth))
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            rgb,
-            depth,
-            depth_scale=1.0,
-            depth_trunc=100.0,
-            convert_rgb_to_intensity=False,
-        )
+        s_delta = self.config["Dataset"].get("s_delta", 0.01)
 
+        # Transform lidar points in world frame to camera frame
         W2C = getWorld2View2(cam.R, cam.T).cpu().numpy()
-        pcd_tmp = o3d.geometry.PointCloud.create_from_rgbd_image(
-            rgbd,
-            o3d.camera.PinholeCameraIntrinsic(
-                cam.image_width,
-                cam.image_height,
-                cam.fx,
-                cam.fy,
-                cam.cx,
-                cam.cy,
-            ),
-            extrinsic=W2C,
-            project_valid_depth_only=True,
+        points_homo = np.concatenate([xyz, np.ones((xyz.shape[0], 1))], axis=1)
+        cam_points = points_homo @ W2C.T
+        xyz_cam = cam_points[:, :3]
+
+        pcd_tmp = o3d.geometry.PointCloud()
+        pcd_tmp.points = o3d.utility.Vector3dVector(xyz_cam)
+        pcd_tmp.colors = o3d.utility.Vector3dVector(rgb)
+
+        # Estimate normals for point cloud
+        pcd_tmp.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
         )
-        pcd_tmp = pcd_tmp.random_down_sample(1.0 / downsample_factor)
-        new_xyz = np.asarray(pcd_tmp.points)
-        new_rgb = np.asarray(pcd_tmp.colors)
+        normals = np.asarray(pcd_tmp.normals)
+
+        # Create octree
+        max_depth = 8
+        octree = o3d.geometry.Octree(max_depth)
+        octree.convert_from_point_cloud(pcd_tmp, size_expand=0.01)
+
+        new_xyz = []
+        new_rgb = []
+        new_normals = []
+
+        def traverse_octree(node, node_info):
+            if isinstance(node, o3d.geometry.OctreeLeafNode):
+                if isinstance(node, o3d.geometry.OctreePointColorLeafNode):
+                    indices = node.indices
+                    if len(indices) > 0:
+                        points = np.asarray(pcd_tmp.points)[indices]
+                        colors = np.asarray(pcd_tmp.colors)[indices]
+                        node_normals = np.asarray(pcd_tmp.normals)[indices]
+                        centroid = np.mean(points, axis=0)
+                        centroid_color = np.mean(colors, axis=0)
+                        centroid_normal = np.mean(node_normals, axis=0) / (
+                                np.linalg.norm(np.mean(node_normals, axis=0)) + 1e-6
+                        )
+                        new_xyz.append(centroid)
+                        new_rgb.append(centroid_color)
+                        new_normals.append(centroid_normal)
+
+        octree.traverse(traverse_octree)
+        new_xyz = np.array(new_xyz)
+        new_rgb = np.array(new_rgb)
+        new_normals = np.array(new_normals)
+
+        if len(new_xyz) == 0:
+            print("No points found in octree, falling back to voxel downsampling.")
+            pcd_tmp = pcd_tmp.voxel_down_sample(voxel_size=voxel_size)
+            new_xyz = np.asarray(pcd_tmp.points)
+            new_rgb = np.asarray(pcd_tmp.colors)
+            pcd_tmp.estimate_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+            )
+            new_normals = np.asarray(pcd_tmp.normals)
 
         pcd = BasicPointCloud(
-            points=new_xyz, colors=new_rgb, normals=np.zeros((new_xyz.shape[0], 3))
+            points=new_xyz, colors=new_rgb, normals=new_normals
         )
         self.ply_input = pcd
 
-        fused_point_cloud = torch.from_numpy(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.from_numpy(np.asarray(pcd.colors)).float().cuda())
+        fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
+        fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
         features = (
             torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2))
             .float()
@@ -160,24 +191,38 @@ class GaussianModel:
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
 
-        dist2 = (
-            torch.clamp_min(
-                distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
-                0.0000001,
-            )
-            * point_size
-        )
-        scales = torch.log(torch.sqrt(dist2))[..., None]
-        if not self.isotropic:
-            scales = scales.repeat(1, 3)
+        # GS-LIVO 初始化：缩放和旋转
+        num_points = fused_point_cloud.shape[0]
+        scales = torch.zeros((num_points, 3), device="cuda")
+        rots = torch.zeros((num_points, 4), device="cuda")
 
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-        rots[:, 0] = 1
+        for i in range(num_points):
+            # 缩放矩阵 S_i
+            s_y = s_z = voxel_size  # 基于体视素大小
+            scales[i] = torch.tensor([s_delta, s_y, s_z], device="cuda")  # 直接使用对角元素
+
+            # 旋转矩阵 W_R_i
+            W_n = torch.from_numpy(new_normals[i]).float().cuda()
+            e_x = torch.tensor([1.0, 0.0, 0.0], device="cuda")
+            v1 = torch.cross(e_x, W_n)
+            if v1.norm() < 1e-6:  # 处理法向量与 e_x 平行
+                e_x = torch.tensor([0.0, 1.0, 0.0], device="cuda")
+                v1 = torch.cross(e_x, W_n)
+            v1 = v1 / (v1.norm() + 1e-6)
+            v2 = torch.cross(W_n, v1) / (torch.cross(W_n, v1).norm() + 1e-6)
+            v3 = W_n / (W_n.norm() + 1e-6)
+            W_R = torch.stack([v1, v2, v3], dim=1)  # 3x3
+
+            # 转换为四元数
+            rot = R.from_matrix(W_R.cpu().numpy())
+            quat = rot.as_quat()  # [x, y, z, w]
+            rots[i] = torch.tensor(quat, device="cuda")
+
+        # 调整 scales 为对数形式（匹配原始代码）
+        scales = torch.log(scales)
+
         opacities = inverse_sigmoid(
-            0.5
-            * torch.ones(
-                (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
-            )
+            0.5 * torch.ones((num_points, 1), dtype=torch.float, device="cuda")
         )
 
         return fused_point_cloud, features, scales, rots, opacities
@@ -304,10 +349,11 @@ class GaussianModel:
         )
 
     def extend_from_lidar_seq(
-        self, cam_info, kf_id=-1, init=False, pcd=None
+            self, cam_info, kf_id=-1, init=False, pcd=None
     ):
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
+
         fused_point_cloud, features, scales, rots, opacities = (
             self.create_pcd_from_lidar_points(cam_info, xyz, rgb, init)
         )
