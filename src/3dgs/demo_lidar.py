@@ -141,7 +141,7 @@ if __name__ == '__main__':
     torchvision.disable_beta_transforms_warning()
 
     num_frames = 1013
-    dataset_path = "../../dataset/red_sculpture_dense"
+    dataset_path = "/data/storage/jianwen/red_sculpture_dense_fixed"
     config_path = "../../config/config_lidar.yaml"
 
     queue = mp.Queue(maxsize=8)
@@ -169,6 +169,13 @@ if __name__ == '__main__':
 
             if packet['is_last']:
                 updated_poses = gs.finalize()
+                gtimages, trajs = [], []
+                for i in range(num_frames):
+                    gtimages.append(torch.tensor(np.array(Image.open(f"{dataset_path}/frame{i}/image.png"))).permute(2, 0, 1))
+                    tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
+                    extrinsic = fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw)
+                    trajs.append(extrinsic.cuda())
+                gs.eval_rendering({index: tensor for index, tensor in enumerate(gtimages)}, None, trajs, torch.arange(0, num_frames))
                 break
         else:
             batch_size = len(packet['tstamp'])
