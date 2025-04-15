@@ -317,9 +317,16 @@ void LIVMapper::handleVIO()
   //   visual_sub_map->push_back(temp_map);
   // }
 
-  publish_frame_world(pubLaserCloudFullRes, vio_manager);
-  publish_img_rgb(pubImage, vio_manager);
-  publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
+  // Check if enough new voxels initialized in the last UpdateVoxelMap to trigger publishing for Gaussian Splatting
+  if (voxelmap_manager->gs_publish_next_) {
+    std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+    std::cout << "\033[1;35m|  Publish for GS, new_voxel_count > threshold  |\033[0m\n";
+    std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+    publish_frame_world(pubLaserCloudFullRes, vio_manager);
+    publish_img_rgb(pubImage, vio_manager);
+    publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
+    voxelmap_manager->gs_publish_next_ = false;
+  }
 
   euler_cur = RotMtoEuler(_state.rot_end);
   fout_out << std::setw(20) << LidarMeasures.last_lio_update_time - _first_lidar_time << " " << euler_cur.transpose() * 57.3 << " "
