@@ -113,6 +113,6 @@ rosbag play path/to/dataset.bag
 ```bash
 act_hi2
 cd /catkin_ws/src/HI-SLAM2
-python3 scripts/test_ros_conversions.py --mode {image, lidar, pose, sync_errors} --folder <folder name inside HI-SLAM2/data/>
+python3 scripts/test_ros_conversions.py --mode {image, lidar, pose, sync_errors, reproj} --folder <folder name inside HI-SLAM2/data/>
 ```
 > Note: If using LiDAR mode, use the left/right arrow keys to move through LiDAR scans. Points are in a fixed world frame.

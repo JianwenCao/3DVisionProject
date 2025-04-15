@@ -107,6 +107,8 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<bool>("publish/pub_effect_point_en", pub_effect_point_en, false);
   nh.param<bool>("publish/dense_map_en", dense_map_en, false);
 
+  nh.param<bool>("gs/gs_en", gs_en, false);
+
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
 }
 
@@ -318,16 +320,23 @@ void LIVMapper::handleVIO()
   // }
 
   // Check if enough new voxels initialized in the last UpdateVoxelMap to trigger publishing for Gaussian Splatting
-  if (voxelmap_manager->gs_publish_next_) {
-    std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
-    std::cout << "\033[1;35m|  Publish for GS, new_voxel_count > threshold  |\033[0m\n";
-    std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+  if (!gs_en) {
     publish_frame_world(pubLaserCloudFullRes, vio_manager);
     publish_img_rgb(pubImage, vio_manager);
     publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
-    voxelmap_manager->gs_publish_next_ = false;
   }
-
+  else {
+    if (voxelmap_manager->gs_publish_next_) {
+      std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+      std::cout << "\033[1;35m|  Publish for GS, new_voxel_count > threshold  |\033[0m\n";
+      std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+      publish_frame_world(pubLaserCloudFullRes, vio_manager);
+      publish_img_rgb(pubImage, vio_manager);
+      publish_odometry(pubOdomAftMapped);
+      voxelmap_manager->gs_publish_next_ = false;
+    }
+  }
+  
   euler_cur = RotMtoEuler(_state.rot_end);
   fout_out << std::setw(20) << LidarMeasures.last_lio_update_time - _first_lidar_time << " " << euler_cur.transpose() * 57.3 << " "
             << _state.pos_end.transpose() << " " << _state.vel_end.transpose() << " " << _state.bias_g.transpose() << " "
