@@ -445,6 +445,19 @@ def visualize_reprojection(data_folder):
         cam_coords_gs_valid = cam_coords_gs[valid_proj]
         colors_valid = colors[valid_proj]
 
+        # —— round‐trip back to world ——
+        # 1) Build homogeneous cam_coords_fast (N×4)
+        ones = np.ones((cam_coords_fast.shape[0],1))
+        cam_hom   = np.hstack([cam_coords_fast[:,:3], ones])   # (N,4)
+        # 2) Undo T_world_to_cam (i.e. apply T_cam_to_world)
+        #    we already built T_world_to_cam above; invert it:
+        T_cam2world = np.linalg.inv(T_world_to_cam)
+        world_hom_rt = (T_cam2world @ cam_hom.T).T          # (N,4)
+        # 3) Compare to original
+        orig_xyz = points[:, :3]                            # your input LiDAR
+        errs = np.linalg.norm(world_hom_rt[:,:3] - orig_xyz, axis=1)
+        print(f"Frame {frame}: round‑trip mean error = {errs.mean():.6f} m, max = {errs.max():.6f} m")
+
         # Pin-hole projection:
         X, Y, Z = cam_coords_gs_valid[:, 0], cam_coords_gs_valid[:, 1], cam_coords_gs_valid[:, 2]
         u = fx * (X / Z) + cx
