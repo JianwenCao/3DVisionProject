@@ -134,7 +134,7 @@ class GSBackEnd(mp.Process):
                     gtdepth=None))
 
     def finalize(self):
-        self.color_refinement(iteration_total=self.gaussians.max_steps)
+        # self.color_refinement(iteration_total=self.gaussians.max_steps)
         self.gaussians.save_ply(f'{self.save_dir}/3dgs_final.ply')
 
         poses_cw = []
@@ -185,13 +185,13 @@ class GSBackEnd(mp.Process):
                 self.gaussians.add_densification_stats(
                     viewspace_point_tensor, visibility_filter
                 )
-                if mapping_iteration % self.init_gaussian_update == 0:
-                    self.gaussians.densify_and_prune(
-                        self.opt_params.densify_grad_threshold,
-                        self.init_gaussian_th,
-                        self.init_gaussian_extent,
-                        None,
-                    )
+                # if mapping_iteration % self.init_gaussian_update == 0:
+                #     self.gaussians.densify_and_prune(
+                #         self.opt_params.densify_grad_threshold,
+                #         self.init_gaussian_th,
+                #         self.init_gaussian_extent,
+                #         None,
+                #     )
 
                 if self.iteration_count == self.init_gaussian_reset:
                     self.gaussians.reset_opacity()
@@ -242,6 +242,21 @@ class GSBackEnd(mp.Process):
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
             loss_mapping += 10 * isotropic_loss.mean()
+
+            # # ─── LiDAR normal‐consistency loss ───
+            # q = self.gaussians._rotation
+            # x, y, z, w = q[:,0], q[:,1], q[:,2], q[:,3]
+            # pred_normals = torch.stack([
+            #     2*( x*z + w*y ),   # R[0,2]
+            #     2*( y*z - w*x ),   # R[1,2]
+            #     w*w - x*x - y*y + z*z  # R[2,2]
+            # ], dim=1)
+            # gt = self.gaussians.normals   # (G,3)
+            # cos = (pred_normals * gt).sum(dim=1).clamp(-1,1)
+            # normal_loss = (1 - cos).mean()
+            # lambda_n = 0.1
+            # loss_mapping += lambda_n * normal_loss
+
             loss_mapping.backward()
 
             with torch.no_grad():
@@ -255,13 +270,13 @@ class GSBackEnd(mp.Process):
                     )
 
                 update_gaussian = self.iteration_count % self.gaussian_update_every == self.gaussian_update_offset
-                if update_gaussian:
-                    self.gaussians.densify_and_prune(
-                        self.opt_params.densify_grad_threshold,
-                        self.gaussian_th,
-                        self.gaussian_extent,
-                        self.size_threshold,
-                    )
+                # if update_gaussian:
+                #     self.gaussians.densify_and_prune(
+                #         self.opt_params.densify_grad_threshold,
+                #         self.gaussian_th,
+                #         self.gaussian_extent,
+                #         self.size_threshold,
+                #     )
 
                 self.gaussian_reset = 501
                 if (self.iteration_count % self.gaussian_reset) == 0 and (not update_gaussian):

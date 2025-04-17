@@ -27,7 +27,9 @@ def fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw):
         return R
     R_A = quaternion_to_rotation_matrix(qx, qy, qz, qw)
     t_A = np.array([tx, ty, tz])
-    T = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]])
+    T = np.array([[0, -1, 0], 
+                  [0, 0, -1], 
+                  [1, 0, 0]])
     R_B = T @ R_A @ T.T
     t_B = T @ t_A
     extrinsic = np.eye(4)
@@ -48,7 +50,7 @@ def transform_points(points):
     Transform points from FAST-LIVO2 to GS world frame.
     Points dimension (N, 6), rows are points, columns 0-5 are x, y, z, r, g, b.
     FAST-LIVO2: x-forward, y-left, z-up
-    GS-LIVO2: x-right, y-down, z-forward
+    GS-LIVO: x-right, y-down, z-forward
     """
     T = torch.eye(6, dtype=torch.float32)
     T[:3, :3] = torch.tensor([[0, 1, 0],   # y -> x
@@ -145,8 +147,10 @@ if __name__ == '__main__':
     # config_path = "../../config/config_lidar.yaml"
 
     # Elliot testing
-    num_frames = 100 # normally 1013
-    dataset_path = "../HI-SLAM2/data/red_sculpture_dense_fixed"
+    # num_frames = 500 # normally 1013
+    # dataset_path = "../HI-SLAM2/data/red_sculpture_dense_fixed"
+    num_frames = 78
+    dataset_path = "../HI-SLAM2/data/CBD_Building_01"
     config_path = "../../config/config_lidar.yaml"
 
     queue = mp.Queue(maxsize=8)
