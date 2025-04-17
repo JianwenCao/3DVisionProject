@@ -53,7 +53,7 @@ def transform_points(points):
     GS-LIVO: x-right, y-down, z-forward
     """
     T = torch.eye(6, dtype=torch.float32)
-    T[:3, :3] = torch.tensor([[0, 1, 0],   # y -> x
+    T[:3, :3] = torch.tensor([[0, -1, 0],   # y -> x
                               [0, 0, -1],  # z -> -y
                               [1, 0, 0]],  # x -> z
                              dtype=torch.float32)
@@ -108,9 +108,11 @@ def data_loader(queue, num_frames, dataset_path):
         image = torch.tensor(np.array(image_pil)).permute(2, 0, 1).cpu()
 
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-        extrinsic = fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw)
-        c2w_gs = torch.inverse(extrinsic)
-        pose = extrinsic_to_tensor(c2w_gs)
+        c2w_gs = fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw)
+        # c2w_gs = torch.inverse(extrinsic)
+        # pose = extrinsic_to_tensor(c2w_gs)
+        w2c_gs = torch.inverse(c2w_gs)
+        pose   = extrinsic_to_tensor(w2c_gs)
         intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
         lidar_points = torch.tensor(np.load(f"{dataset_path}/frame{i}/points.npy"))
         transformed_lidar_points = transform_points(lidar_points)
@@ -164,7 +166,7 @@ if __name__ == '__main__':
 
     processed_frames = 0
     frame_counter = 0
-    step = 5  # step for keyframe selection
+    step = 1  # step for keyframe selection
 
     while processed_frames < num_frames:
         packet = queue.get()
