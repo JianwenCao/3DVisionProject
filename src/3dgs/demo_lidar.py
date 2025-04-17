@@ -160,10 +160,10 @@ if __name__ == '__main__':
     # config_path = "../../config/config_lidar.yaml"
 
     # Elliot testing
-    num_frames = 500 # normally 1013
-    dataset_path = "../HI-SLAM2/data/red_sculpture_dense_fixed"
-    # num_frames = 78
-    # dataset_path = "../HI-SLAM2/data/CBD_Building_01"
+    # num_frames = 500 # normally 1013
+    # dataset_path = "../HI-SLAM2/data/red_sculpture_dense_fixed"
+    num_frames = 78
+    dataset_path = "../HI-SLAM2/data/CBD_Building_01"
     config_path = "../../config/config_lidar.yaml"
 
     queue = mp.Queue(maxsize=8)

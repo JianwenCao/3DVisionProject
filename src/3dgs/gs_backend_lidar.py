@@ -12,7 +12,7 @@ from gaussian.renderer import render
 from gaussian.utils.loss_utils import l1_loss, ssim
 from gaussian.scene.gaussian_model import GaussianModel
 from gaussian.utils.graphics_utils import getProjectionMatrix2
-from gaussian.utils.slam_utils import update_pose, to_se3_vec, get_loss_mapping_rgb
+from gaussian.utils.slam_utils import update_pose, to_se3_vec, get_loss_mapping_rgb, get_loss_lidar_normal, quaternion_to_normal
 from gaussian.utils.camera_utils import Camera
 from gaussian.utils.eval_utils import eval_rendering, eval_rendering_kf
 from gaussian.gui import gui_utils, slam_gui
@@ -239,24 +239,22 @@ class GSBackEnd(mp.Process):
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
 
+            # ─── add the LiDAR‑normal term ONCE per iteration ───
+            lambda_n = self.config["Training"].get("lambda_normal", 0.7)
+            normal_loss = get_loss_lidar_normal(self.gaussians, lambda_n)
+            loss_mapping += normal_loss
+            if self.iteration_count % 10 == 0:
+                mean_ang = torch.rad2deg(torch.acos(
+                            (quaternion_to_normal(self.gaussians._rotation) *
+                            self.gaussians.normals).sum(-1).clamp(-1,1)
+                        )).mean().item()
+                print(f"[norm] iter {self.iteration_count:5d} | "
+                    f"mean ang err {mean_ang:6.2f}°   loss {normal_loss.item():.4f}")
+            # ──────────────────────────────────────────────────────
+
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
             loss_mapping += 10 * isotropic_loss.mean()
-
-            # # ─── LiDAR normal‐consistency loss ───
-            # q = self.gaussians._rotation
-            # x, y, z, w = q[:,0], q[:,1], q[:,2], q[:,3]
-            # pred_normals = torch.stack([
-            #     2*( x*z + w*y ),   # R[0,2]
-            #     2*( y*z - w*x ),   # R[1,2]
-            #     w*w - x*x - y*y + z*z  # R[2,2]
-            # ], dim=1)
-            # gt = self.gaussians.normals   # (G,3)
-            # cos = (pred_normals * gt).sum(dim=1).clamp(-1,1)
-            # normal_loss = (1 - cos).mean()
-            # lambda_n = 0.1
-            # loss_mapping += lambda_n * normal_loss
-
             loss_mapping.backward()
 
             with torch.no_grad():

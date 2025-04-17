@@ -207,15 +207,39 @@ def get_loss_tracking_rgbd(
     return alpha * l1_rgb + (1 - alpha) * l1_depth.mean()
 
 
-def get_loss_normal(depth_mean, viewpoint):
-    prior_normal = viewpoint.normal.cuda()
-    prior_normal = prior_normal.reshape(3, *depth_mean.shape[-2:]).permute(1,2,0)
-    prior_normal_normalized = torch.nn.functional.normalize(prior_normal, dim=-1)
+# def get_loss_normal(depth_mean, viewpoint):
+#     prior_normal = viewpoint.normal.cuda()
+#     prior_normal = prior_normal.reshape(3, *depth_mean.shape[-2:]).permute(1,2,0)
+#     prior_normal_normalized = torch.nn.functional.normalize(prior_normal, dim=-1)
 
-    normal_mean, _ = depth_to_normal(viewpoint, depth_mean, world_frame=False)
-    normal_error = 1 - (prior_normal_normalized * normal_mean).sum(dim=-1)
-    normal_error[prior_normal.norm(dim=-1) < 0.2] = 0
-    return normal_error.mean()
+#     normal_mean, _ = depth_to_normal(viewpoint, depth_mean, world_frame=False)
+#     normal_error = 1 - (prior_normal_normalized * normal_mean).sum(dim=-1)
+#     normal_error[prior_normal.norm(dim=-1) < 0.2] = 0
+#     return normal_error.mean()
+
+@torch.no_grad()
+def quaternion_to_normal(q: torch.Tensor) -> torch.Tensor:
+    """
+    Fast extraction of the +z axis of every quaternion in (x,y,z,w) order.
+    q : (...,4) tensor  – *unnormalised* quats are fine because we rely
+                          on GaussianModel.rotation_activation to keep
+                          them unit‑length during optimisation.
+    returns: (...,3)     – normal vector per quaternion.
+    """
+    x, y, z, w = q.unbind(dim=-1)
+    return torch.stack([2*(x*z + w*y),
+                        2*(y*z - w*x),
+                        w*w - x*x - y*y + z*z], dim=-1)
+# ───────────────────────────────────────────────────────────────
+def get_loss_lidar_normal(gaussians, weight: float = 0.1) -> torch.Tensor:
+    """
+    Cosine distance between predicted (+z) and LiDAR target normals.
+    """
+    pred = quaternion_to_normal(gaussians._rotation)      # (G,3)
+    target = gaussians.normals                            # (G,3)
+    cos = (pred*target).sum(-1).clamp(-1, 1)              # (G,)
+    return weight * (1. - cos).mean()
+# ───────────────────────────────────────────────────────────────
 
 
 def get_loss_mapping_rgb(config, image, depth, viewpoint):

@@ -7,3 +7,4 @@ src/Sophus/build/
 .idea
 
 src/3dgs/**/__pycache__/
+src/HI-SLAM2/data/

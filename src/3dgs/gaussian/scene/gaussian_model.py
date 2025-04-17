@@ -64,7 +64,7 @@ class GaussianModel:
 
         self.isotropic = False
 
-        # self.normals = torch.empty(0, device="cuda")
+        self.normals = torch.empty(0, 3, device="cuda")
 
     def build_covariance_from_scaling_rotation(
         self, scaling, scaling_modifier, rotation
@@ -154,6 +154,8 @@ class GaussianModel:
             normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
             normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
             rots  = torch.tensor(normal_quats, device="cuda")
+            # For normal supervision:
+            normals_cuda = torch.from_numpy(new_normals).float().cuda()
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1
@@ -163,7 +165,7 @@ class GaussianModel:
             0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
         )
 
-        return fused_point_cloud, features, scales, rots, opacities
+        return fused_point_cloud, features, scales, rots, opacities, normals_cuda
 
 
     @staticmethod
@@ -261,7 +263,7 @@ class GaussianModel:
         self.spatial_lr_scale = spatial_lr_scale
 
     def extend_from_pcd(
-        self, fused_point_cloud, features, scales, rots, opacities, kf_id
+        self, fused_point_cloud, features, scales, rots, opacities, normals, kf_id
     ):
         new_xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         new_features_dc = nn.Parameter(
@@ -273,6 +275,7 @@ class GaussianModel:
         new_scaling = nn.Parameter(scales.requires_grad_(True))
         new_rotation = nn.Parameter(rots.requires_grad_(True))
         new_opacity = nn.Parameter(opacities.requires_grad_(True))
+        new_normals = normals.detach()        # TODO check plain Tensor, no Autograd
 
         new_unique_kfIDs = torch.ones((new_xyz.shape[0])).int() * kf_id
         new_n_obs = torch.zeros((new_xyz.shape[0])).int()
@@ -283,6 +286,7 @@ class GaussianModel:
             new_opacity,
             new_scaling,
             new_rotation,
+            new_normals,
             new_kf_ids=new_unique_kfIDs,
             new_n_obs=new_n_obs,
         )
@@ -303,12 +307,12 @@ class GaussianModel:
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
 
-        fused_point_cloud, features, scales, rots, opacities = (
+        fused_point_cloud, features, scales, rots, opacities, normals = (
             self.create_pcd_from_lidar_points(cam_info, xyz, rgb, init)
         )
 
         self.extend_from_pcd(
-            fused_point_cloud, features, scales, rots, opacities, kf_id
+            fused_point_cloud, features, scales, rots, opacities, normals, kf_id
         )
 
     def training_setup(self, training_args):
@@ -480,6 +484,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self.normals   = self.normals[valid_points_mask]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -530,6 +535,7 @@ class GaussianModel:
         new_opacities,
         new_scaling,
         new_rotation,
+        new_normals=None,
         new_kf_ids=None,
         new_n_obs=None,
     ):
@@ -549,6 +555,9 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        if new_normals is not None:
+            self.normals = torch.cat((self.normals,
+                                      new_normals.detach()), dim=0)
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -584,6 +593,7 @@ class GaussianModel:
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_normals = self.normals[selected_pts_mask].repeat(N, 1).detach()
 
         new_kf_id = self.unique_kfIDs[selected_pts_mask.cpu()].repeat(N)
         new_n_obs = self.n_obs[selected_pts_mask.cpu()].repeat(N)
@@ -595,6 +605,7 @@ class GaussianModel:
             new_opacity,
             new_scaling,
             new_rotation,
+            new_normals,
             new_kf_ids=new_kf_id,
             new_n_obs=new_n_obs,
         )
@@ -625,6 +636,7 @@ class GaussianModel:
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
+        new_normals = self.normals[selected_pts_mask]
 
         new_kf_id = self.unique_kfIDs[selected_pts_mask.cpu()]
         new_n_obs = self.n_obs[selected_pts_mask.cpu()]
@@ -635,6 +647,7 @@ class GaussianModel:
             new_opacities,
             new_scaling,
             new_rotation,
+            new_normals,
             new_kf_ids=new_kf_id,
             new_n_obs=new_n_obs,
         )
