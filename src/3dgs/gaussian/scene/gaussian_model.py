@@ -169,15 +169,15 @@ class GaussianModel:
         Gaussian plane.
         """
         # Following GS-LIVO Gaussian rotation initalization
-        # FAST-LIVO / GS-LIVO e_x was x-axis normal vector (camera depth plane, into screen)
-        # In new camera coords, this axis is the +z axis
+        # In FAST-LIVO / GS-LIVO, camera optical axis was +x vector
+        # In transformed (GS) coords, optical axis is +z axis
 
         device = normals.device
-        e_x_old = torch.tensor([0.0, 0.0, 1.0], device=device)
-        e_x_old_batch = e_x_old.unsqueeze(0).expand_as(normals)  # (N,3)
+        cam_opt_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
+        cam_opt_axis_batch = cam_opt_axis.unsqueeze(0).expand_as(normals)  # (N,3)
 
-        # Basis vector v1.
-        v1 = torch.cross(e_x_old_batch, normals, dim=1)  # (N,3)
+        # Basis vector v1: optical axis X normals
+        v1 = torch.cross(cam_opt_axis_batch, normals, dim=1)  # (N,3)
         v1_norm = v1.norm(dim=1, keepdim=True)           # (N,1)
 
         # Handle near-parallel normals where cross product ~0.
@@ -188,11 +188,11 @@ class GaussianModel:
         v1 = torch.where(use_alt, v1_alt, v1)  # (N,3)
         v1 = v1 / (v1_norm + 1e-6)
 
-        # Basis vector v2 = n_i x v1
+        # Basis vector v2: normals x v1
         v2 = torch.cross(normals, v1, dim=1)
         v2 = v2 / (v2.norm(dim=1, keepdim=True) + 1e-6)
 
-        # Basis vector v3
+        # Basis vector v3: normals
         v3 = normals / (normals.norm(dim=1, keepdim=True) + 1e-6)
 
         R = torch.stack([v1, v2, v3], dim=2)  # (N,3,3)
