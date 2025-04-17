@@ -149,9 +149,14 @@ class GaussianModel:
         if not self.isotropic:
             scales = scales.repeat(1, 3)
 
-        normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
-        normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
-        rots  = torch.tensor(normal_quats, device="cuda")
+        if self.config["Dataset"]["rotation_init"] == True:
+            # Compute point normals
+            normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
+            normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
+            rots  = torch.tensor(normal_quats, device="cuda")
+        else:
+            rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+            rots[:, 0] = 1
         
         num_points = fused_point_cloud.shape[0]
         opacities = inverse_sigmoid(
