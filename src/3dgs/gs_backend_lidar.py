@@ -239,18 +239,18 @@ class GSBackEnd(mp.Process):
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
 
-            # ─── add the LiDAR‑normal term ONCE per iteration ───
-            lambda_n = self.config["Training"].get("lambda_normal", 0.7)
-            normal_loss = get_loss_lidar_normal(self.gaussians, lambda_n)
-            loss_mapping += normal_loss
-            if self.iteration_count % 10 == 0:
-                mean_ang = torch.rad2deg(torch.acos(
-                            (quaternion_to_normal(self.gaussians._rotation) *
-                            self.gaussians.normals).sum(-1).clamp(-1,1)
-                        )).mean().item()
-                print(f"[norm] iter {self.iteration_count:5d} | "
-                    f"mean ang err {mean_ang:6.2f}°   loss {normal_loss.item():.4f}")
-            # ──────────────────────────────────────────────────────
+            # # ─── add the LiDAR‑normal term ONCE per iteration ───
+            # lambda_n = self.config["Training"].get("lambda_normal", 0.7)
+            # normal_loss = get_loss_lidar_normal(self.gaussians, lambda_n)
+            # loss_mapping += normal_loss
+            # if self.iteration_count % 10 == 0:
+            #     mean_ang = torch.rad2deg(torch.acos(
+            #                 (quaternion_to_normal(self.gaussians._rotation) *
+            #                 self.gaussians.normals).sum(-1).clamp(-1,1)
+            #             )).mean().item()
+            #     print(f"[norm] iter {self.iteration_count:5d} | "
+            #         f"mean ang err {mean_ang:6.2f}°   loss {normal_loss.item():.4f}")
+            # # ──────────────────────────────────────────────────────
 
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))

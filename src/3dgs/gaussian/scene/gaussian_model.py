@@ -118,14 +118,14 @@ class GaussianModel:
             "voxel_size_init" if init else "voxel_size", 2.0
         )
 
-        # Build global voxel grid, xyz already in world coords
+        # Build global voxel grid, xyz already in world coords, compute normals
         pcd_world = o3d.geometry.PointCloud()
         pcd_world.points = o3d.utility.Vector3dVector(xyz)
         pcd_world.colors = o3d.utility.Vector3dVector(rgb)
         pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
         pcd_ds.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
-        )
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.75, max_nn=75)
+        ) # TODO tune search params
 
         new_xyz     = np.asarray(pcd_ds.points)
         new_rgb     = np.asarray(pcd_ds.colors)
@@ -149,8 +149,7 @@ class GaussianModel:
         if not self.isotropic:
             scales = scales.repeat(1, 3)
 
-        if self.config["Dataset"]["rotation_init"] == True:
-            # Compute point normals
+        if self.config["Dataset"]["rotation_init"]:
             normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
             normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
             rots  = torch.tensor(normal_quats, device="cuda")
@@ -159,6 +158,7 @@ class GaussianModel:
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1
+            normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
         
         num_points = fused_point_cloud.shape[0]
         opacities = inverse_sigmoid(
@@ -193,7 +193,7 @@ class GaussianModel:
         e_alt = torch.tensor([0.0, 1.0, 0.0], device=device).unsqueeze(0)
         v1_alt = torch.cross(e_alt, normals, dim=1)
         v1 = torch.where(use_alt, v1_alt, v1)  # (N,3)
-        v1 = v1 / (v1_norm + 1e-6)
+        v1 = v1 / (v1.norm(dim=1, keepdim=True) + 1e-6)
 
         # Basis vector v2: normals x v1
         v2 = torch.cross(normals, v1, dim=1)
