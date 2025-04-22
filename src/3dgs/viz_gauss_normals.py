@@ -51,9 +51,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load data
     pts, quats = load_points_quats(args.ply)
-    # --- normalize quaternions to ensure unit length ---
     norms = np.linalg.norm(quats, axis=1, keepdims=True)
     quats = quats / np.maximum(norms, 1e-8)
     normals = quats_to_normals(quats)
@@ -73,70 +71,47 @@ def main():
         plt.show()
         return
 
-    # Select scalar field from normals
     comp_idx = {"x":0, "y":1, "z":2}[args.component]
     scalar = normals[:, comp_idx] * 0.5 + 0.5    # map [-1,1] -> [0,1]
 
-    # Apply a matplotlib colormap (jet) for false-color mapping
     cmap = cm.get_cmap("jet")
-    colors = cmap(scalar)[:, :3]                  # RGB cols in [0,1]
+    colors = cmap(scalar)[:, :3]
 
-    # Build Open3D PointCloud
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
-    # attach normals if you want arrow view later
     pcd.normals = o3d.utility.Vector3dVector(normals)
     pcd.colors = o3d.utility.Vector3dVector(colors)
 
-    # Visualize point cloud with false-color
+    # o3d.visualization.draw_geometries(
+    #     [pcd],
+    #     window_name=f"Gaussian Normals False-Color ({args.component})",
+    #     point_show_normal=True,
+    #     width=800,
+    #     height=600
+    # )
+
+    arrow_len   = 0.05 * np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound())
+    step        = 200                     # show 1 arrow every <step> points
+    indices     = np.arange(0, len(pts), step)
+
+    p0          = pts[indices]                           # arrow bases
+    p1          = p0 + normals[indices] * arrow_len      # arrow tips
+    line_pts    = np.vstack([p0, p1])
+    lines       = np.vstack([np.arange(len(indices)),
+                            np.arange(len(indices)) + len(indices)]).T
+    line_colors = np.tile([1, 0, 0], (len(lines), 1))    # red arrows
+
+    arrows = o3d.geometry.LineSet()
+    arrows.points = o3d.utility.Vector3dVector(line_pts)
+    arrows.lines  = o3d.utility.Vector2iVector(lines)
+    arrows.colors = o3d.utility.Vector3dVector(line_colors)
+    # ----------------------------------------------
+
     o3d.visualization.draw_geometries(
-        [pcd],
+        [pcd, arrows],
         window_name=f"Gaussian Normals False-Color ({args.component})",
-        point_show_normal=False,
-        width=800,
-        height=600
+        width=800, height=600
     )
-
-    parser = argparse.ArgumentParser(
-        description="Open3D viewer for Gaussian point cloud normals false-color map"
-    )
-    parser.add_argument(
-        "--ply", "-p", required=True,
-        help="Path to Gaussian PLY (with x,y,z and rot_0..rot_3 fields)"
-    )
-    parser.add_argument(
-        "--component", "-c", choices=["x","y","z"], default="z",
-        help="Which normal component to map for coloring (x, y, or z)"
-    )
-    args = parser.parse_args()
-
-    # Load data
-    pts, quats = load_points_quats(args.ply)
-    normals = quats_to_normals(quats)
-
-    # Select scalar field from normals
-    comp_idx = {"x":0, "y":1, "z":2}[args.component]
-    scalar = normals[:, comp_idx] * 0.5 + 0.5    # map [-1,1] -> [0,1]
-
-    # Apply a matplotlib colormap (jet) for false-color mapping
-    cmap = cm.get_cmap("jet")
-    colors = cmap(scalar)[:, :3]                  # RGB cols in [0,1]
-
-    # Build Open3D PointCloud
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(pts)
-    # attach normals if you want arrow view later
-    pcd.normals = o3d.utility.Vector3dVector(normals)
-    pcd.colors = o3d.utility.Vector3dVector(colors)
-
-    # Visualize point cloud with false-color
-    o3d.visualization.draw_geometries(
-        [pcd],
-        window_name=f"Gaussian Normals False-Color ({args.component})",
-        point_show_normal=False,
-        width=800,
-        height=600
-    )
-
+    
 if __name__ == "__main__":
     main()

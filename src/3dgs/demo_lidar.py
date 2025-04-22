@@ -8,6 +8,7 @@ from tqdm import tqdm
 from PIL import Image
 import torchvision
 import time
+import argparse
 
 def quaternion_to_rotation_matrix(qx, qy, qz, qw):
     norm = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
@@ -110,29 +111,21 @@ def project_lidar_to_depth(points, pose, intrinsic, H=512, W=640, max_depth=80):
         depth_map[v, u] = depths
     return depth_map
 
-def data_loader(queue, num_frames, dataset_path):
+def data_loader(queue, num_frames, dataset_path, coordinate_transform):
     batch_size = 10
     batch_data = {"images": [], "poses": [], "intrinsics": [], "points": [], "tstamp": []}
 
     for i in tqdm(range(num_frames), desc="Loading data"):
         image_pil = Image.open(f"{dataset_path}/frame{i}/image.png")
         image = torch.tensor(np.array(image_pil)).permute(2, 0, 1).cpu()
-
-        # Define transfrom FAST-LIVO2 to GS coordinate system
-        T = torch.tensor([
-            [ 0, -1,  0, 0],    # -y_fast = x_gs
-            [ 0,  0, -1, 0],    # -z_fast = y_gs
-            [ 1,  0,  0, 0],    # x_fast = z_gs
-            [ 0,  0,  0, 1]   
-        ], dtype=torch.float32)
         
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T)
+        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
         w2c = torch.inverse(c2w)
         pose   = transform_to_tensor(w2c)
         intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
         lidar_points = torch.tensor(np.load(f"{dataset_path}/frame{i}/points.npy"))
-        transformed_lidar_points = transform_points(lidar_points, T)
+        transformed_lidar_points = transform_points(lidar_points, coordinate_transform)
 
         batch_data["images"].append(image)
         batch_data["poses"].append(pose)
@@ -161,22 +154,42 @@ if __name__ == '__main__':
     mp.set_start_method('spawn')
     torchvision.disable_beta_transforms_warning()
 
-    # num_frames = 1013
-    # dataset_path = "../../dataset/red_sculpture_dense"
-    # config_path = "../../config/config_lidar.yaml"
+    # Implement argparse to allow personal dataset/config paths
+    # TODO Handles preprocessed data only, modify later to handle online data
+    parser = argparse.ArgumentParser(
+        description="Runs 3DGS pipeline on preprocessed synced sensor data."
+    )
+    parser.add_argument(
+        "--dataset", "-d", required=True,
+        help="Path to local dataset w.r.t to the current working directory."
+    )
+    parser.add_argument(
+        "--config", "-c", required=True,
+        help="Path to local config_lidar.yaml w.r.t to the current working directory."
+    )
+    parser.add_argument(
+        "--num_frames", "-n", type=int, required=True,
+        help="Number of frames to process."
+    )
+    args = parser.parse_args()
 
-    # Elliot testing
-    # num_frames = 500 # normally 1013
-    # dataset_path = "../HI-SLAM2/data/red_sculpture_dense_fixed"
-    num_frames = 78
-    dataset_path = "../HI-SLAM2/data/CBD_Building_01"
-    config_path = "../../config/config_lidar.yaml"
+    config_path = args.config
+    dataset_path = args.dataset
+    num_frames = args.num_frames
 
     queue = mp.Queue(maxsize=8)
     config = load_config(config_path)
     gs = GSBackEnd(config, save_dir="./output", use_gui=True)
 
-    loader_process = mp.Process(target=data_loader, args=(queue, num_frames, dataset_path))
+    # Define transfrom FAST-LIVO2 to GS coordinate system
+    T = torch.tensor([
+        [ 0, -1,  0, 0],    # -y_fast = x_gs
+        [ 0,  0, -1, 0],    # -z_fast = y_gs
+        [ 1,  0,  0, 0],    # x_fast = z_gs
+        [ 0,  0,  0, 1]   
+    ], dtype=torch.float32)
+
+    loader_process = mp.Process(target=data_loader, args=(queue, num_frames, dataset_path, T))
     loader_process.start()
 
     pbar = tqdm(total=num_frames, desc="Processing frames")
@@ -201,7 +214,7 @@ if __name__ == '__main__':
                 for i in range(num_frames):
                      gtimages.append(torch.tensor(np.array(Image.open(f"{dataset_path}/frame{i}/image.png"))).permute(2, 0, 1))
                      tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-                     extrinsic = quat_to_transform(tx, ty, tz, qx, qy, qz, qw)
+                     extrinsic = torch.inverse(quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T))
                      trajs.append(extrinsic.cuda())
                 gs.eval_rendering({index: tensor for index, tensor in enumerate(gtimages)}, None, trajs, torch.arange(0, num_frames))
                 break

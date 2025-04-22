@@ -113,7 +113,7 @@ class GaussianModel:
 
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
     
-    def create_pcd_from_lidar_points(self, cam, xyz, rgb, init=False):
+    def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
         voxel_size = self.config["Dataset"].get(
             "voxel_size_init" if init else "voxel_size", 2.0
         )
@@ -124,8 +124,12 @@ class GaussianModel:
         pcd_world.colors = o3d.utility.Vector3dVector(rgb)
         pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
         pcd_ds.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.75, max_nn=75)
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
         ) # TODO tune search params
+        R_w2c = cam_info.R.cpu().numpy()
+        T_w2c = cam_info.T.cpu().numpy()
+        cam_pose = - R_w2c.T.dot(T_w2c)
+        pcd_ds.orient_normals_towards_camera_location(cam_pose)
 
         new_xyz     = np.asarray(pcd_ds.points)
         new_rgb     = np.asarray(pcd_ds.colors)
