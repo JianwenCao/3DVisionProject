@@ -30,6 +30,8 @@ Training:
   compensate_exposure: true
   monocular: false
   max_steps: 15000
+  rotation_init: true
+  lambda_normal: 1.0
 
 Dataset:
   pcd_downsample: 1.43
@@ -40,7 +42,6 @@ Dataset:
   voxel_size_init: 2.0
   voxel_size: 0.2
   max_points_per_voxel: 10
-  rotation_init: true
 Tracking:
   motion_filter:
     thresh: 2.4

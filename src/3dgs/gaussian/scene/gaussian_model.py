@@ -149,7 +149,7 @@ class GaussianModel:
         if not self.isotropic:
             scales = scales.repeat(1, 3)
 
-        if self.config["Dataset"]["rotation_init"]:
+        if self.config["Training"]["rotation_init"]:
             normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
             normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
             rots  = torch.tensor(normal_quats, device="cuda")

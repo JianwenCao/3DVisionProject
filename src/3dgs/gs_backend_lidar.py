@@ -67,7 +67,7 @@ class GSBackEnd(mp.Process):
         self.gaussian_reset = self.config["Training"]["gaussian_reset"]
         self.size_threshold = self.config["Training"]["size_threshold"]
         self.window_size = self.config["Training"]["window_size"]
-        # self.lambda_dnormal = self.config["Training"]["lambda_dnormal"]  # Commented out as normal loss is removed
+        self.lambda_normal = self.config["Training"]["lambda_normal"]  # Testing
 
     def process_track_data(self, packet):
         if not hasattr(self, "projection_matrix"):
@@ -134,7 +134,7 @@ class GSBackEnd(mp.Process):
                     gtdepth=None))
 
     def finalize(self):
-        # self.color_refinement(iteration_total=self.gaussians.max_steps)
+        self.color_refinement(iteration_total=self.gaussians.max_steps)
         self.gaussians.save_ply(f'{self.save_dir}/3dgs_final.ply')
 
         poses_cw = []
@@ -185,13 +185,13 @@ class GSBackEnd(mp.Process):
                 self.gaussians.add_densification_stats(
                     viewspace_point_tensor, visibility_filter
                 )
-                # if mapping_iteration % self.init_gaussian_update == 0:
-                #     self.gaussians.densify_and_prune(
-                #         self.opt_params.densify_grad_threshold,
-                #         self.init_gaussian_th,
-                #         self.init_gaussian_extent,
-                #         None,
-                #     )
+                if mapping_iteration % self.init_gaussian_update == 0:
+                    self.gaussians.densify_and_prune(
+                        self.opt_params.densify_grad_threshold,
+                        self.init_gaussian_th,
+                        self.init_gaussian_extent,
+                        None,
+                    )
 
                 if self.iteration_count == self.init_gaussian_reset:
                     self.gaussians.reset_opacity()
@@ -233,25 +233,12 @@ class GSBackEnd(mp.Process):
                     render_pkg["radii"],
                     render_pkg["n_touched"])
 
-                # loss_mapping += self.lambda_dnormal * get_loss_normal(depth, viewpoint) / 10.
                 loss_mapping += get_loss_mapping_rgb(self.config, image, viewpoint)
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
 
-            # # ─── add the LiDAR‑normal term ONCE per iteration ───
-            # lambda_n = self.config["Training"].get("lambda_normal", 0.7)
-            # normal_loss = get_loss_lidar_normal(self.gaussians, lambda_n)
-            # loss_mapping += normal_loss
-            # if self.iteration_count % 10 == 0:
-            #     mean_ang = torch.rad2deg(torch.acos(
-            #                 (quaternion_to_normal(self.gaussians._rotation) *
-            #                 self.gaussians.normals).sum(-1).clamp(-1,1)
-            #             )).mean().item()
-            #     print(f"[norm] iter {self.iteration_count:5d} | "
-            #         f"mean ang err {mean_ang:6.2f}°   loss {normal_loss.item():.4f}")
-            # # ──────────────────────────────────────────────────────
-
+            loss_mapping += self.lambda_normal * get_loss_lidar_normal(self.gaussians)
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
             loss_mapping += 10 * isotropic_loss.mean()
@@ -268,13 +255,13 @@ class GSBackEnd(mp.Process):
                     )
 
                 update_gaussian = self.iteration_count % self.gaussian_update_every == self.gaussian_update_offset
-                # if update_gaussian:
-                #     self.gaussians.densify_and_prune(
-                #         self.opt_params.densify_grad_threshold,
-                #         self.gaussian_th,
-                #         self.gaussian_extent,
-                #         self.size_threshold,
-                #     )
+                if update_gaussian:
+                    self.gaussians.densify_and_prune(
+                        self.opt_params.densify_grad_threshold,
+                        self.gaussian_th,
+                        self.gaussian_extent,
+                        self.size_threshold,
+                    )
 
                 self.gaussian_reset = 501
                 if (self.iteration_count % self.gaussian_reset) == 0 and (not update_gaussian):
@@ -321,11 +308,10 @@ class GSBackEnd(mp.Process):
                         1.0 - ssim(image, gt_image))
             loss += get_loss_mapping_rgb(self.config, image, viewpoint_cam)
 
-            # Commented out normal loss in color refinement
-            # if iteration < 7000:
-            #     loss += self.lambda_dnormal * get_loss_normal(depth, viewpoint_cam)
-            # else:
-            #     loss += self.lambda_dnormal * get_loss_normal(depth, viewpoint_cam) / 2
+            if iteration < 7000:
+                loss += self.lambda_normal * get_loss_lidar_normal(self.gaussians)
+            else:
+                loss += self.lambda_normal * get_loss_lidar_normal(self.gaussians) / 2
             loss.backward()
             with torch.no_grad():
                 self.gaussians.optimizer.step()

@@ -72,9 +72,15 @@ def project_lidar_to_depth(points, pose, intrinsic, H=512, W=640, max_depth=80):
     points_homo = torch.cat([points_xyz, torch.ones(points_xyz.shape[0], 1, device=points.device)], dim=1)
 
     # Convert pose to extrinsic (c2w in GS frame)
-    tx, ty, tz, qx, qy, qz, qw = pose.tolist()
-    w2c = torch.inverse(fastlivo_to_gs_extrinsic(tx, ty, tz, qx, qy, qz, qw))  # GS uses c2w, so invert to w2c
-
+    # Define transfrom FAST-LIVO2 to GS coordinate system
+    T = torch.tensor([
+            [ 0, -1,  0, 0],    # -y_fast = x_gs
+            [ 0,  0, -1, 0],    # -z_fast = y_gs
+            [ 1,  0,  0, 0],    # x_fast = z_gs
+            [ 0,  0,  0, 1]   
+        ], dtype=torch.float32)
+    tx, ty, tz, qx, qy, qz, qw = pose.tolist() # c2w matrix
+    w2c = torch.inverse(quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T))
     # Transform points to camera frame
     cam_points = torch.matmul(points_homo, w2c.T)
     depths = cam_points[:, 2]
@@ -191,6 +197,13 @@ if __name__ == '__main__':
 
             if packet['is_last']:
                 updated_poses = gs.finalize()
+                gtimages, trajs = [], []
+                for i in range(num_frames):
+                     gtimages.append(torch.tensor(np.array(Image.open(f"{dataset_path}/frame{i}/image.png"))).permute(2, 0, 1))
+                     tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
+                     extrinsic = quat_to_transform(tx, ty, tz, qx, qy, qz, qw)
+                     trajs.append(extrinsic.cuda())
+                gs.eval_rendering({index: tensor for index, tensor in enumerate(gtimages)}, None, trajs, torch.arange(0, num_frames))
                 break
         else:
             batch_size = len(packet['tstamp'])
