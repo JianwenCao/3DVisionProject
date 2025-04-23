@@ -9,7 +9,7 @@ import argparse
 import numpy as np
 import open3d as o3d
 from plyfile import PlyData
-import matplotlib.cm as cm
+import matplotlib.pyplot as plt
 
 
 def load_points_quats(path):
@@ -49,19 +49,18 @@ def main():
         "--hist", action="store_true",
         help="If set, plot a histogram of the chosen normal component and exit"
     )
+    parser.add_argument(
+        "--arrows", action="store_true",
+        help="If set, visualize arrows on some points (downsampled)"
+    )
     args = parser.parse_args()
 
     pts, quats = load_points_quats(args.ply)
     norms = np.linalg.norm(quats, axis=1, keepdims=True)
     quats = quats / np.maximum(norms, 1e-8)
     normals = quats_to_normals(quats)
-    print("quat stats:", 
-        np.min(quats, axis=0), 
-        np.max(quats, axis=0), 
-        np.mean(quats, axis=0))
 
     if args.hist:
-        import matplotlib.pyplot as plt
         comp_idx = {"x":0, "y":1, "z":2}[args.component]
         values = normals[:, comp_idx]
         plt.hist(values, bins=100)
@@ -74,44 +73,44 @@ def main():
     comp_idx = {"x":0, "y":1, "z":2}[args.component]
     scalar = normals[:, comp_idx] * 0.5 + 0.5    # map [-1,1] -> [0,1]
 
-    cmap = cm.get_cmap("jet")
+    cmap = plt.get_cmap('jet')
     colors = cmap(scalar)[:, :3]
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
     pcd.normals = o3d.utility.Vector3dVector(normals)
     pcd.colors = o3d.utility.Vector3dVector(colors)
+    print(f"Number of Gaussians in map: {len(pts)}")
 
-    # o3d.visualization.draw_geometries(
-    #     [pcd],
-    #     window_name=f"Gaussian Normals False-Color ({args.component})",
-    #     point_show_normal=True,
-    #     width=800,
-    #     height=600
-    # )
+    if args.arrows:
+        arrow_len   = 1
+        step        = 75                     # show 1 arrow every <step> points
+        indices     = np.arange(0, len(pts), step)
 
-    arrow_len   = 0.05 * np.linalg.norm(pcd.get_max_bound() - pcd.get_min_bound())
-    step        = 200                     # show 1 arrow every <step> points
-    indices     = np.arange(0, len(pts), step)
+        p0          = pts[indices]                           # arrow bases
+        p1          = p0 + normals[indices] * arrow_len      # arrow tips
+        line_pts    = np.vstack([p0, p1])
+        lines       = np.vstack([np.arange(len(indices)),
+                                np.arange(len(indices)) + len(indices)]).T
+        line_colors = np.tile([1, 0, 0], (len(lines), 1))
 
-    p0          = pts[indices]                           # arrow bases
-    p1          = p0 + normals[indices] * arrow_len      # arrow tips
-    line_pts    = np.vstack([p0, p1])
-    lines       = np.vstack([np.arange(len(indices)),
-                            np.arange(len(indices)) + len(indices)]).T
-    line_colors = np.tile([1, 0, 0], (len(lines), 1))    # red arrows
+        arrows = o3d.geometry.LineSet()
+        arrows.points = o3d.utility.Vector3dVector(line_pts)
+        arrows.lines  = o3d.utility.Vector2iVector(lines)
+        arrows.colors = o3d.utility.Vector3dVector(line_colors)
 
-    arrows = o3d.geometry.LineSet()
-    arrows.points = o3d.utility.Vector3dVector(line_pts)
-    arrows.lines  = o3d.utility.Vector2iVector(lines)
-    arrows.colors = o3d.utility.Vector3dVector(line_colors)
-    # ----------------------------------------------
-
-    o3d.visualization.draw_geometries(
-        [pcd, arrows],
-        window_name=f"Gaussian Normals False-Color ({args.component})",
-        width=800, height=600
-    )
+        o3d.visualization.draw_geometries(
+            [pcd, arrows],
+            window_name=f"Gaussian Normals False-Color ({args.component})",
+            width=800, height=600
+        )
+    else:
+        o3d.visualization.draw_geometries(
+            [pcd],
+            window_name=f"Gaussian Normals False-Color ({args.component})",
+            point_show_normal=False,
+            width=800, height=600
+        )
     
 if __name__ == "__main__":
     main()

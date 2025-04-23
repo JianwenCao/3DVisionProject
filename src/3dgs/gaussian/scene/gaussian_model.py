@@ -125,10 +125,8 @@ class GaussianModel:
         pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
         pcd_ds.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-        ) # TODO tune search params
-        R_w2c = cam_info.R.cpu().numpy()
-        T_w2c = cam_info.T.cpu().numpy()
-        cam_pose = - R_w2c.T.dot(T_w2c)
+        ) # TODO tune search params. Radius 1.0, max_nn 60 also works well.
+        cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
         pcd_ds.orient_normals_towards_camera_location(cam_pose)
 
         new_xyz     = np.asarray(pcd_ds.points)

@@ -134,7 +134,7 @@ class GSBackEnd(mp.Process):
                     gtdepth=None))
 
     def finalize(self):
-        # self.color_refinement(iteration_total=self.gaussians.max_steps)
+        self.color_refinement(iteration_total=self.gaussians.max_steps)
         self.gaussians.save_ply(f'{self.save_dir}/3dgs_final.ply')
 
         poses_cw = []
