@@ -116,7 +116,44 @@ cd /catkin_ws/src/HI-SLAM2
 python3 scripts/test_ros_conversions.py --mode {image, lidar, pose} --folder <folder name inside HI-SLAM2/data/>
 ```
 
-## Hi-SLAM2 Configuration
-pip install torch-cluster
-transformers
-for keyframe selection based on LiDAR overlap
+## Custom 3DGS Package
+> Note: `hislam_with_gpu` devcontainer already has these pip dependencies installed when you activate the HI-SLAM2 conda env (`act_hi2`).
+
+If you are not using this devcontainer, your env requires:
+```bash
+pip install torch-cluster transformers
+```
+
+### Run 3DGS with LiDAR Initialization
+```bash
+cd /catkin_ws/src/3dgs
+python3 demo_lidar.py # Requires following parameters
+```
+#### Parameters:
+- `-c`: Path to the configuration file w.r.t cwd (e.g., `../../config/config_lidar.yaml`).
+- `-n`: Number of frames to process.
+- `-d`: Path to the preprocessed dataset directory w.r.t cwd (e.g. `../HI-SLAM2/data/CBD_Building_01`)
+
+### Visualize Gaussian Rotations from `.ply` File
+```bash
+python viz_gauss_normals.py \
+    --ply <path_to_ply_file> [--component {x,y,z}] [--hist] [--arrows]
+```
+
+#### Options:
+- `--ply PLY, -p PLY`  
+  Path to the Gaussian `.ply` file (must include `x`, `y`, `z`, and `rot_0..rot_3` fields).
+
+- `--component {x,y,z}, -c {x,y,z}`  
+  Specify which normal component (`x`, `y`, or `z`) to use for coloring. Defult `z`.
+
+- `--hist`  
+  Plot a histogram of the chosen normal component and exit.
+
+- `--arrows`  
+  Visualize arrows on some points (downsampled).
+
+Example usage:
+```bash
+python viz_gauss_normals.py --ply output/rot_init_after_refine.ply --arrows
+```
