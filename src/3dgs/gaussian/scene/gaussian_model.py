@@ -66,6 +66,12 @@ class GaussianModel:
 
         self.normals = torch.empty(0, 3, device="cuda")
 
+        self.octree = None
+        self.octree_size = None
+        self.octree_initialized = False
+        self.global_points = []  # Store global point cloud points
+        self.global_colors = []  # Store global point cloud colors
+
     def build_covariance_from_scaling_rotation(
         self, scaling, scaling_modifier, rotation
     ):
@@ -113,31 +119,137 @@ class GaussianModel:
 
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
     
-    def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
-        voxel_size = self.config["Dataset"].get(
-            "voxel_size_init" if init else "voxel_size", 2.0
-        )
+    # def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
+    #     # Load octree parameters from config
+    #     voxel_size = self.config["Dataset"].get("voxel_size", 0.5)  # Root voxel size in meters
+    #     max_layer = self.config["Dataset"].get("max_layer", 2)  # Maximum octree depth
+    #     max_points_num = self.config["Dataset"].get("max_points_num", 50)  # Max points per voxel
+    #     layer_init_num = self.config["Dataset"].get("layer_init_num", [5, 5, 5, 5, 5])  # Per-layer point thresholds
+    #
+    #     voxel_size = self.config["Dataset"].get(
+    #         "voxel_size_init" if init else "voxel_size", 2.0
+    #     )
+    #
+    #     # Build global voxel grid, xyz already in world coords, compute normals
+    #     pcd_world = o3d.geometry.PointCloud()
+    #     pcd_world.points = o3d.utility.Vector3dVector(xyz)
+    #     pcd_world.colors = o3d.utility.Vector3dVector(rgb)
+    #     pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
+    #     pcd_ds.estimate_normals(
+    #         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
+    #     )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
+    #
+    #     pcd_ds.orient_normals_consistent_tangent_plane(k=10)
+    #     cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
+    #     pcd_ds.orient_normals_towards_camera_location(cam_pose)
+    #
+    #     new_xyz = np.asarray(pcd_ds.points)
+    #     new_rgb = np.asarray(pcd_ds.colors)
+    #     new_normals = np.asarray(pcd_ds.normals)
+    #
+    #     pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
+    #     self.ply_input = pcd
+    #
+    #     fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
+    #     fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
+    #     features = torch.zeros(
+    #         (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
+    #         device="cuda", dtype=torch.float32
+    #     )
+    #     features[:, :3, 0] = fused_color
+    #     features[:, 3:, 1:] = 0.0
+    #
+    #     point_size = self.config["Dataset"]["point_size"]
+    #     dist2 = torch.clamp_min(distCUDA2(fused_point_cloud), 1e-7) * point_size
+    #     scales = torch.log(torch.sqrt(dist2))[..., None]
+    #     if not self.isotropic:
+    #         scales = scales.repeat(1, 3)
+    #
+    #     if self.config["Training"]["rotation_init"]:
+    #         normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
+    #         normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
+    #         rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
+    #         # For normal supervision:
+    #         normals_cuda = torch.from_numpy(new_normals).float().cuda()
+    #     else:
+    #         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+    #         rots[:, 0] = 1
+    #         normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
+    #
+    #     num_points = fused_point_cloud.shape[0]
+    #     opacities = inverse_sigmoid(
+    #         0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
+    #     )
+    #
+    #     return fused_point_cloud, features, scales, rots, opacities, normals_cuda
 
-        # Build global voxel grid, xyz already in world coords, compute normals
+    def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
+        # Load octree parameters from config
+        voxel_size = 0.5  # Root voxel size in meters, fixed to 0.5m
+        max_layer = 2  # Maximum octree depth, fixed to 2 layers
+        max_points_num = self.config["Dataset"].get("max_points_num", 50)  # Max points per voxel
+
+        # Build octree-based point cloud, xyz already in world coords, compute normals
         pcd_world = o3d.geometry.PointCloud()
         pcd_world.points = o3d.utility.Vector3dVector(xyz)
         pcd_world.colors = o3d.utility.Vector3dVector(rgb)
-        pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
+
+        # Check if point cloud is empty
+        if not pcd_world.has_points():
+            raise ValueError("Input point cloud is empty")
+
+        # Compute bounding box to determine size_expand
+        bbox = pcd_world.get_axis_aligned_bounding_box()
+        max_bound = np.max(bbox.get_extent())  # Maximum extent of the bounding box
+        size_expand = min(max(voxel_size / max_bound, 0.01),
+                          1.0)  # Convert voxel_size to relative scale, clamp to [0.01, 1.0]
+
+        # Create octree with specified max depth and computed size_expand
+        octree = o3d.geometry.Octree(max_depth=max_layer)
+        octree.convert_from_point_cloud(pcd_world, size_expand=size_expand)
+
+        # Down-sample by selecting points from leaf nodes, respecting max_points_num, and track depths for scales
+        def extract_leaf_points(octree, max_points_num):
+            points = []
+            colors = []
+            depths = []  # Track depth of each point for scale initialization
+
+            def traverse(node, node_info):
+                if isinstance(node, o3d.geometry.OctreeLeafNode):
+                    if node.indices:
+                        # Select up to max_points_num points from the node
+                        selected_indices = node.indices[:min(len(node.indices), max_points_num)]
+                        points.extend(np.asarray(pcd_world.points)[selected_indices])
+                        colors.extend(np.asarray(pcd_world.colors)[selected_indices])
+                        depths.extend([node_info.depth] * len(selected_indices))  # Record depth for each point
+
+            octree.traverse(traverse)
+            return np.array(points), np.array(colors), np.array(depths)
+
+        new_xyz, new_rgb, point_depths = extract_leaf_points(octree, max_points_num)
+
+
+        # Create down-sampled point cloud
+        pcd_ds = o3d.geometry.PointCloud()
+        pcd_ds.points = o3d.utility.Vector3dVector(new_xyz)
+        pcd_ds.colors = o3d.utility.Vector3dVector(new_rgb)
+
+        # Estimate normals
         pcd_ds.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-        ) # TODO tune search params. Radius 1.0, max_nn 60 also works well.
+        )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
+
+        pcd_ds.orient_normals_consistent_tangent_plane(k=10)
         cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
         pcd_ds.orient_normals_towards_camera_location(cam_pose)
 
-        new_xyz     = np.asarray(pcd_ds.points)
-        new_rgb     = np.asarray(pcd_ds.colors)
         new_normals = np.asarray(pcd_ds.normals)
 
         pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
         self.ply_input = pcd
 
         fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
-        fused_color       = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
+        fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
         features = torch.zeros(
             (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
             device="cuda", dtype=torch.float32
@@ -145,30 +257,37 @@ class GaussianModel:
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
 
-        point_size = self.config["Dataset"]["point_size"]
-        dist2 = torch.clamp_min(distCUDA2(fused_point_cloud), 1e-7) * point_size
-        scales = torch.log(torch.sqrt(dist2))[..., None]
-        if not self.isotropic:
-            scales = scales.repeat(1, 3)
+        # Initialize scales using LiDAR-Camera joint method: S = diag(s_delta, s_y, s_z)
+        slice_thickness = 0.01  # Hyper-parameter for s_delta (plane thickness in meters)
+        depths_tensor = torch.from_numpy(point_depths).float().cuda()
+        # Compute s_y, s_z based on voxel size at each point's depth
+        voxel_sizes = voxel_size / (2 ** depths_tensor)  # Voxel size at each depth (e.g., 0.5, 0.25, 0.125)
+        s_y = s_z = voxel_sizes  # s_y and s_z are equal, based on voxel size
+        s_delta = torch.full_like(s_y, slice_thickness)  # s_delta is constant
+
+        # Construct scales as (s_delta, s_y, s_z) in the local frame
+        scales = torch.stack([s_delta, s_y, s_z], dim=-1)  # Shape: (N, 3)
+
+        # Apply log transformation as in original code
+        scales = torch.log(scales)
 
         if self.config["Training"]["rotation_init"]:
             normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
             normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
-            rots  = torch.tensor(normal_quats, device="cuda")
+            rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
             # For normal supervision:
             normals_cuda = torch.from_numpy(new_normals).float().cuda()
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1
             normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
-        
+
         num_points = fused_point_cloud.shape[0]
         opacities = inverse_sigmoid(
             0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
         )
 
         return fused_point_cloud, features, scales, rots, opacities, normals_cuda
-
 
     @staticmethod
     def batch_gaussian_rotation(normals: torch.Tensor) -> torch.Tensor:

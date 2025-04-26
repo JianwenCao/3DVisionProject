@@ -61,3 +61,7 @@ Tracking:
   pgba:
     active: False
     pgba_thresh: 22.0
+  voxel_size: 0.5
+  max_layer: 2
+  max_points_num: 50
+  layer_init_num: [ 5, 5, 5, 5, 5 ]
