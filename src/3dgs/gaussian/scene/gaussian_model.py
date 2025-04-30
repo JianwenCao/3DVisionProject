@@ -257,16 +257,16 @@ class GaussianModel:
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
 
-        # Initialize scales using LiDAR-Camera joint method: S = diag(s_delta, s_y, s_z)
+        # Initialize scales using LiDAR-Camera joint method: S = diag(s_x, s_y, s_delta)
         slice_thickness = 0.01  # Hyper-parameter for s_delta (plane thickness in meters)
         depths_tensor = torch.from_numpy(point_depths).float().cuda()
         # Compute s_y, s_z based on voxel size at each point's depth
         voxel_sizes = voxel_size / (2 ** depths_tensor)  # Voxel size at each depth (e.g., 0.5, 0.25, 0.125)
-        s_y = s_z = voxel_sizes  # s_y and s_z are equal, based on voxel size
-        s_delta = torch.full_like(s_y, slice_thickness)  # s_delta is constant
+        s_xy = voxel_sizes  # s_x and s_y are equal, based on voxel size
+        s_delta = torch.full_like(s_xy, slice_thickness)  # s_delta is constant
 
-        # Construct scales as (s_delta, s_y, s_z) in the local frame
-        scales = torch.stack([s_delta, s_y, s_z], dim=-1)  # Shape: (N, 3)
+        # Construct scales as (s_x, s_y, s_delta) in the local frame
+        scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)  # Shape: (N, 3)
 
         # Apply log transformation as in original code
         scales = torch.log(scales)
