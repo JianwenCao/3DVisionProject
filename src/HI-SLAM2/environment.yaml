@@ -37,6 +37,7 @@ dependencies:
     - plyfile
     - rich
     - glfw
+    - pyglm
     - glm==0.4.3
     - roslibpy
     - torch-cluster
