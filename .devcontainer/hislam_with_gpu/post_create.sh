@@ -18,11 +18,20 @@ rm -rf thirdparty/diff-gaussian-rasterization
 git clone https://gitlab.com/libeigen/eigen.git thirdparty/eigen
 git clone https://github.com/princeton-vl/lietorch.git thirdparty/lietorch
 git clone https://gitlab.inria.fr/bkerbl/simple-knn.git thirdparty/simple-knn
-git clone -b main https://github.com/graphdeco-inria/diff-gaussian-rasterization.git thirdparty/diff-gaussian-rasterization
+
+# download the “main” branch snapshot
+curl -L https://github.com/Willyzw/HI-SLAM2/archive/refs/heads/main.tar.gz \
+     -o /tmp/hislam2-main.tar.gz
+tar --wildcards -xzf /tmp/hislam2-main.tar.gz \
+    --strip-components=2 \
+    -C thirdparty \
+    "HI-SLAM2-main/thirdparty/diff-gaussian-rasterization/*"
+rm /tmp/hislam2-main.tar.gz
+
 git clone https://github.com/g-truc/glm.git thirdparty/diff-gaussian-rasterization/third_party/glm
 git submodule update --init --recursive
 
-# conda env create -f environment.yaml -vv
+conda env create -f environment.yaml -vv
 conda activate hislam2
 pip install -e thirdparty/simple-knn
 pip install -e thirdparty/diff-gaussian-rasterization
