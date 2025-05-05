@@ -197,6 +197,13 @@ class GaussianModel:
         # Check if point cloud is empty
         if not pcd_world.has_points():
             raise ValueError("Input point cloud is empty")
+        
+        pcd_world.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=20)
+        )
+        pcd_world.orient_normals_consistent_tangent_plane(k=20)
+        cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
+        pcd_world.orient_normals_towards_camera_location(cam_pose)
 
         # Compute bounding box to determine size_expand
         bbox = pcd_world.get_axis_aligned_bounding_box()
@@ -213,6 +220,7 @@ class GaussianModel:
             points = []
             colors = []
             depths = []  # Track depth of each point for scale initialization
+            norms = []
 
             def traverse(node, node_info):
                 if isinstance(node, o3d.geometry.OctreeLeafNode):
@@ -222,28 +230,29 @@ class GaussianModel:
                         points.extend(np.asarray(pcd_world.points)[selected_indices])
                         colors.extend(np.asarray(pcd_world.colors)[selected_indices])
                         depths.extend([node_info.depth] * len(selected_indices))  # Record depth for each point
+                        norms.extend(np.asarray(pcd_world.normals)[selected_indices])
 
             octree.traverse(traverse)
-            return np.array(points), np.array(colors), np.array(depths)
+            return np.array(points), np.array(colors), np.array(depths), np.array(norms)
 
-        new_xyz, new_rgb, point_depths = extract_leaf_points(octree, max_points_num)
+        new_xyz, new_rgb, point_depths, new_normals = extract_leaf_points(octree, max_points_num)
 
 
-        # Create down-sampled point cloud
-        pcd_ds = o3d.geometry.PointCloud()
-        pcd_ds.points = o3d.utility.Vector3dVector(new_xyz)
-        pcd_ds.colors = o3d.utility.Vector3dVector(new_rgb)
+        # # Create down-sampled point cloud
+        # pcd_ds = o3d.geometry.PointCloud()
+        # pcd_ds.points = o3d.utility.Vector3dVector(new_xyz)
+        # pcd_ds.colors = o3d.utility.Vector3dVector(new_rgb)
 
-        # Estimate normals
-        pcd_ds.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-        )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
+        # # Estimate normals
+        # pcd_ds.estimate_normals(
+        #     search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
+        # )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
 
-        pcd_ds.orient_normals_consistent_tangent_plane(k=10)
-        cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
-        pcd_ds.orient_normals_towards_camera_location(cam_pose)
+        # pcd_ds.orient_normals_consistent_tangent_plane(k=10)
+        # cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
+        # pcd_ds.orient_normals_towards_camera_location(cam_pose)
 
-        new_normals = np.asarray(pcd_ds.normals)
+        # new_normals = np.asarray(pcd_ds.normals)
 
         pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
         self.ply_input = pcd
@@ -266,7 +275,7 @@ class GaussianModel:
         s_delta = torch.full_like(s_xy, slice_thickness)  # s_delta is constant
 
         # Construct scales as (s_x, s_y, s_delta) in the local frame
-        scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)  # Shape: (N, 3)
+        scales = torch.stack([s_delta, s_xy, s_xy], dim=-1)  # Shape: (N, 3)
 
         # Apply log transformation as in original code
         scales = torch.log(scales)
@@ -377,6 +386,8 @@ class GaussianModel:
             quat[mask_2, 3] = (R[mask_2, 1, 0] - R[mask_2, 0, 1]) / s
             quat[mask_2, 0] = (R[mask_2, 0, 2] + R[mask_2, 2, 0]) / s
             quat[mask_2, 1] = (R[mask_2, 1, 2] + R[mask_2, 2, 1]) / s
+
+        quat = quat / torch.norm(quat, dim=1, keepdim=True)
 
         return quat
 
