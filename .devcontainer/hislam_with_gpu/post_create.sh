@@ -9,31 +9,17 @@ source /home/devuser/miniconda/etc/profile.d/conda.sh
 echo "alias act_hi2='source /home/devuser/miniconda/bin/activate hislam2'" >> /home/devuser/.bashrc
 
 # Change to the HI-SLAM2 folder and create the conda environment and run setup.py
-cd /catkin_ws/src/HI-SLAM2
-rm -rf thirdparty/eigen
-rm -rf thirdparty/lietorch
-rm -rf thirdparty/simple-knn
-rm -rf thirdparty/diff-gaussian-rasterization
-
-git clone https://gitlab.com/libeigen/eigen.git thirdparty/eigen
-git clone https://github.com/princeton-vl/lietorch.git thirdparty/lietorch
-git clone https://gitlab.inria.fr/bkerbl/simple-knn.git thirdparty/simple-knn
-
-# download the “main” branch snapshot
-curl -L https://github.com/Willyzw/HI-SLAM2/archive/refs/heads/main.tar.gz \
-     -o /tmp/hislam2-main.tar.gz
-tar --wildcards -xzf /tmp/hislam2-main.tar.gz \
-    --strip-components=2 \
-    -C thirdparty \
-    "HI-SLAM2-main/thirdparty/diff-gaussian-rasterization/*"
-rm /tmp/hislam2-main.tar.gz
-
-git clone https://github.com/g-truc/glm.git thirdparty/diff-gaussian-rasterization/third_party/glm
-git submodule update --init --recursive
+cd /catkin_ws/src/
+git clone --recursive https://github.com/Willyzw/HI-SLAM2 HI-SLAM2-original
+cd HI-SLAM2-original
 
 conda env create -f environment.yaml -vv
 conda activate hislam2
-pip install -e thirdparty/simple-knn
-pip install -e thirdparty/diff-gaussian-rasterization
+pip install \
+    PyOpenGL \
+    PyOpenGL_accelerate \
+    roslibpy \
+    torch-cluster==1.6.3 \
+    transformers==4.51.3
 python setup.py install
 

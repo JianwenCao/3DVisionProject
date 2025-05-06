@@ -6,14 +6,16 @@
     "workspaceFolder": "/catkin_ws",
   
     "runArgs": [
+      "--gpus", "all",
       "--net=host",
       "-e", "DISPLAY=${env:DISPLAY}",
       "-e", "QT_X11_NO_MITSHM=1",
       "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
-      "--device=/dev/dri:/dev/dri",
+      // "--device=/dev/dri:/dev/dri",
       
-      "--shm-size=10g",
-      "--gpus", "all"
+      "-e", "__NV_PRIME_RENDER_OFFLOAD=1",
+      "-e", "__GLX_VENDOR_LIBRARY_NAME=nvidia",
+      "--shm-size=10g"
     ],
   
     "customizations": {
