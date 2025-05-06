@@ -36,7 +36,9 @@ dependencies:
     - plyfile
     - rich
     - glfw
-    - pyglm
+    # - pyglm # redundant
+    - PyOpenGL 
+    - PyOpenGL_accelerate
     - glm==0.4.3
     - roslibpy
     - torch-cluster==1.6.3
