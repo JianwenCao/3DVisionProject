@@ -198,10 +198,11 @@ class GaussianModel:
         if not pcd_world.has_points():
             raise ValueError("Input point cloud is empty")
         
+        # Estimate normals before downsampling (TODO: tune params)
         pcd_world.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=20)
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
         )
-        pcd_world.orient_normals_consistent_tangent_plane(k=20)
+        pcd_world.orient_normals_consistent_tangent_plane(k=10)
         cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
         pcd_world.orient_normals_towards_camera_location(cam_pose)
 
@@ -236,23 +237,6 @@ class GaussianModel:
             return np.array(points), np.array(colors), np.array(depths), np.array(norms)
 
         new_xyz, new_rgb, point_depths, new_normals = extract_leaf_points(octree, max_points_num)
-
-
-        # # Create down-sampled point cloud
-        # pcd_ds = o3d.geometry.PointCloud()
-        # pcd_ds.points = o3d.utility.Vector3dVector(new_xyz)
-        # pcd_ds.colors = o3d.utility.Vector3dVector(new_rgb)
-
-        # # Estimate normals
-        # pcd_ds.estimate_normals(
-        #     search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-        # )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
-
-        # pcd_ds.orient_normals_consistent_tangent_plane(k=10)
-        # cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
-        # pcd_ds.orient_normals_towards_camera_location(cam_pose)
-
-        # new_normals = np.asarray(pcd_ds.normals)
 
         pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
         self.ply_input = pcd
