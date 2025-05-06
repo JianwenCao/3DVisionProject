@@ -37,7 +37,7 @@ dependencies:
     - rich
     - glfw
     - pyglm
-    # - glm==0.4.3
+    - glm==0.4.3
     - roslibpy
-    - torch-cluster
-    - transformers
+    - torch-cluster==1.6.3
+    - transformers==4.51.3
