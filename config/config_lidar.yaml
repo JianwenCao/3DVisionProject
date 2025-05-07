@@ -42,6 +42,7 @@ Dataset:
   voxel_size_init: 2.0
   voxel_size: 0.2
   max_points_per_voxel: 10
+
 Tracking:
   motion_filter:
     thresh: 2.4
@@ -65,3 +66,8 @@ Tracking:
   max_layer: 2
   max_points_num: 50
   layer_init_num: [ 5, 5, 5, 5, 5 ]
+
+Mapping:
+  voxel_size: 0.05
+  max_points_per_voxel: 1
+  max_active_gaussians: 100000

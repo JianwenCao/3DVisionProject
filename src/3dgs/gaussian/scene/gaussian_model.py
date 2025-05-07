@@ -29,6 +29,10 @@ from gaussian.utils.graphics_utils import BasicPointCloud, getWorld2View2
 from gaussian.utils.sh_utils import RGB2SH
 from scipy.spatial.transform import Rotation as R
 
+from gaussian.scene.global_voxel_map import GlobalVoxelMap, GlobalVoxelSlot, voxel_key_from_xyz
+from gaussian.utils.camera_utils import Camera
+import time
+
 
 class GaussianModel:
     def __init__(self, sh_degree: int, config=None):
@@ -71,6 +75,8 @@ class GaussianModel:
         self.octree_initialized = False
         self.global_points = []  # Store global point cloud points
         self.global_colors = []  # Store global point cloud colors
+
+        self.global_voxel_map = GlobalVoxelMap(config)
 
     def build_covariance_from_scaling_rotation(
         self, scaling, scaling_modifier, rotation
@@ -184,10 +190,8 @@ class GaussianModel:
     #     return fused_point_cloud, features, scales, rots, opacities, normals_cuda
 
     def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
-        # Load octree parameters from config
-        voxel_size = 0.5  # Root voxel size in meters, fixed to 0.5m
-        max_layer = 2  # Maximum octree depth, fixed to 2 layers
-        max_points_num = self.config["Dataset"].get("max_points_num", 50)  # Max points per voxel
+        # Spatial hash root voxel size in meters
+        voxel_size = self.config["Mapping"].get("voxel_size", 0.1)  # Root voxel size in meters
 
         # Build octree-based point cloud, xyz already in world coords, compute normals
         pcd_world = o3d.geometry.PointCloud()
@@ -206,43 +210,37 @@ class GaussianModel:
         cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
         pcd_world.orient_normals_towards_camera_location(cam_pose)
 
-        # Compute bounding box to determine size_expand
-        bbox = pcd_world.get_axis_aligned_bounding_box()
-        max_bound = np.max(bbox.get_extent())  # Maximum extent of the bounding box
-        size_expand = min(max(voxel_size / max_bound, 0.01),
-                          1.0)  # Convert voxel_size to relative scale, clamp to [0.01, 1.0]
+        new_xyz = np.asarray(pcd_world.points)
+        new_rgb = np.asarray(pcd_world.colors)
+        new_normals = np.asarray(pcd_world.normals)
 
-        # Create octree with specified max depth and computed size_expand
-        octree = o3d.geometry.Octree(max_depth=max_layer)
-        octree.convert_from_point_cloud(pcd_world, size_expand=size_expand)
+        keys, inv = np.unique(
+            np.floor(new_xyz / voxel_size).astype(int),
+            axis=0, return_inverse=True)
+        
+        M = keys.shape[0]
+        # counts per voxel
+        counts = np.bincount(inv, minlength=M).astype(np.float32)  # (M,)
 
-        # Down-sample by selecting points from leaf nodes, respecting max_points_num, and track depths for scales
-        def extract_leaf_points(octree, max_points_num):
-            points = []
-            colors = []
-            depths = []  # Track depth of each point for scale initialization
-            norms = []
+        # sum up xyz, rgb, normals per voxel
+        centroids = np.zeros((M,3), dtype=np.float32)
+        colors = np.zeros((M,3), dtype=np.float32)
+        norms = np.zeros((M,3), dtype=np.float32)
+        np.add.at(centroids, inv, new_xyz)
+        np.add.at(colors, inv, new_rgb)
+        np.add.at(norms, inv, new_normals)
 
-            def traverse(node, node_info):
-                if isinstance(node, o3d.geometry.OctreeLeafNode):
-                    if node.indices:
-                        # Select up to max_points_num points from the node
-                        selected_indices = node.indices[:min(len(node.indices), max_points_num)]
-                        points.extend(np.asarray(pcd_world.points)[selected_indices])
-                        colors.extend(np.asarray(pcd_world.colors)[selected_indices])
-                        depths.extend([node_info.depth] * len(selected_indices))  # Record depth for each point
-                        norms.extend(np.asarray(pcd_world.normals)[selected_indices])
-
-            octree.traverse(traverse)
-            return np.array(points), np.array(colors), np.array(depths), np.array(norms)
-
-        new_xyz, new_rgb, point_depths, new_normals = extract_leaf_points(octree, max_points_num)
-
-        pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
+        # normalize to get mean & unit normals
+        centroids /= counts[:,None]
+        colors /= counts[:,None]
+        norms /= (np.linalg.norm(norms, axis=1, keepdims=True) + 1e-8)
+       
+        pcd = BasicPointCloud(points=centroids, colors=colors, normals=norms)
         self.ply_input = pcd
 
-        fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
-        fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
+        fused_point_cloud = torch.from_numpy(centroids).float().cuda()
+        fused_color = RGB2SH(torch.from_numpy(colors).float().cuda())
+
         features = torch.zeros(
             (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
             device="cuda", dtype=torch.float32
@@ -250,26 +248,19 @@ class GaussianModel:
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
 
-        # Initialize scales using LiDAR-Camera joint method: S = diag(s_x, s_y, s_delta)
-        slice_thickness = 0.01  # Hyper-parameter for s_delta (plane thickness in meters)
-        depths_tensor = torch.from_numpy(point_depths).float().cuda()
-        # Compute s_y, s_z based on voxel size at each point's depth
-        voxel_sizes = voxel_size / (2 ** depths_tensor)  # Voxel size at each depth (e.g., 0.5, 0.25, 0.125)
-        s_xy = voxel_sizes  # s_x and s_y are equal, based on voxel size
-        s_delta = torch.full_like(s_xy, slice_thickness)  # s_delta is constant
-
-        # Construct scales as (s_x, s_y, s_delta) in the local frame
-        scales = torch.stack([s_delta, s_xy, s_xy], dim=-1)  # Shape: (N, 3)
-
-        # Apply log transformation as in original code
+        # Initialize scales using voxel size and thin s_delta
+        s_xy = torch.full((M,), voxel_size,  device="cuda") # tangent extents
+        s_delta = torch.full_like(s_xy, 0.01) # 1 cm slice
+        scales = torch.stack([s_xy, s_xy, s_delta], dim=-1) # (M,3)
         scales = torch.log(scales)
 
         if self.config["Training"]["rotation_init"]:
-            normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
+            # For normal supervision:
+            normals_cuda = torch.from_numpy(norms).float().cuda()
+
+            normal_rot_mats = self.batch_gaussian_rotation(normals_cuda)
             normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
             rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
-            # For normal supervision:
-            normals_cuda = torch.from_numpy(new_normals).float().cuda()
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1
@@ -298,15 +289,15 @@ class GaussianModel:
         cam_opt_axis_batch = cam_opt_axis.unsqueeze(0).expand_as(normals)  # (N,3)
 
         # Basis vector v1: optical axis X normals
-        v1 = torch.cross(cam_opt_axis_batch, normals, dim=1)  # (N,3)
-        v1_norm = v1.norm(dim=1, keepdim=True)           # (N,1)
+        v1 = torch.cross(cam_opt_axis_batch, normals, dim=1) # (N,3)
+        v1_norm = v1.norm(dim=1, keepdim=True) # (N,1)
 
         # Handle near-parallel normals where cross product ~0.
         threshold = 1e-6
         use_alt = v1_norm < threshold
         e_alt = torch.tensor([0.0, 1.0, 0.0], device=device).unsqueeze(0)
         v1_alt = torch.cross(e_alt, normals, dim=1)
-        v1 = torch.where(use_alt, v1_alt, v1)  # (N,3)
+        v1 = torch.where(use_alt, v1_alt, v1) # (N,3)
         v1 = v1 / (v1.norm(dim=1, keepdim=True) + 1e-6)
 
         # Basis vector v2: normals x v1
@@ -316,7 +307,7 @@ class GaussianModel:
         # Basis vector v3: normals
         v3 = normals / (normals.norm(dim=1, keepdim=True) + 1e-6)
 
-        R = torch.stack([v1, v2, v3], dim=2)  # (N,3,3)
+        R = torch.stack([v1, v2, v3], dim=2) # (N,3,3)
 
         return R
 
@@ -423,13 +414,66 @@ class GaussianModel:
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
 
+        t0 = time.perf_counter()
+
         fused_point_cloud, features, scales, rots, opacities, normals = (
             self.create_pcd_from_lidar_points(cam_info, xyz, rgb, init)
         )
 
+        t1 = time.perf_counter()
+
+        # Compute voxel spatial keys
+        pts_np = fused_point_cloud.cpu().numpy() # (M,3)
+        keys = np.floor(pts_np / self.global_voxel_map.voxel_size).astype(np.int32) # (M,3)
+
+        # Find voxels that are not full (mask_np)
+        default_slot = GlobalVoxelSlot()
+        counts = np.fromiter(
+            ( self.global_voxel_map.map.get(tuple(k), default_slot).count
+            for k in keys ),
+            dtype=np.int32,
+            count=keys.shape[0]
+        )
+        mask_np = counts < self.global_voxel_map.max_points_per_voxel
+        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device)
+        
+        t2 = time.perf_counter()
+
+        # Insert map points in only under-filled voxels
+        new_pts = pts_np[mask_np]
+        keys_to_init = self.global_voxel_map.insert_points(new_pts)
+
+        t3 = time.perf_counter()
+
+        # Frustum-cull & update sliding-window with only the new keys
+        planes = cam_info.frustum_planes.cpu().numpy()
+        self.global_voxel_map.update_active_gaussians(planes, keys_to_init)
+        
+        t4 = time.perf_counter()
+
+        # Filter full scan mask, pass along only new 
+        # points in voxel space that are not full
+        fused_point_cloud = fused_point_cloud[mask]
+        features = features[mask]
+        scales = scales[mask]
+        rots = rots[mask]
+        opacities = opacities[mask]
+        normals = normals[mask]
+
+        t5 = time.perf_counter()
+
         self.extend_from_pcd(
             fused_point_cloud, features, scales, rots, opacities, normals, kf_id
         )
+
+        t6 = time.perf_counter()
+
+        print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
+            f"fullness={(t2-t1)*1e3:.1f}, "
+            f"insert={(t3-t2)*1e3:.1f}, "
+            f"cull={(t4-t3)*1e3:.1f}, "
+            f"filter={(t5-t4)*1e3:.1f}, "
+            f"extend={(t6-t5)*1e3:.1f}")
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense

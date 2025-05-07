@@ -112,6 +112,23 @@ class Camera(nn.Module):
         return Camera(
             uid, None, None, None, T, projection_matrix, fx, fy, cx, cy, FoVx, FoVy, H, W
         )
+    
+    @property
+    def frustum_planes(self):
+        """
+        Returns a (6,4) torch.Tensor of [a,b,c,d] plane coeffs for Camera object.
+        """
+        VP = self.full_proj_transform.to(self.device)  # (4,4)
+        m = VP
+        planes = torch.zeros((6, 4), device=self.device, dtype=m.dtype)
+        planes[0] = m[3] + m[0]
+        planes[1] = m[3] - m[0]
+        planes[2] = m[3] + m[1]
+        planes[3] = m[3] - m[1]
+        planes[4] = m[3] + m[2]
+        planes[5] = m[3] - m[2]
+        planes = planes / planes[:, :3].norm(dim=1, keepdim=True)
+        return planes
 
     @property
     def world_view_transform(self):
