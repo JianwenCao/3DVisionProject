@@ -13,6 +13,8 @@ import os
 
 import numpy as np
 import open3d as o3d
+import meshlib.mrmeshnumpy as mrnp
+import meshlib.mrmeshpy as mr
 import torch
 from plyfile import PlyData, PlyElement
 from simple_knn._C import distCUDA2
@@ -193,36 +195,28 @@ class GaussianModel:
         # Spatial hash root voxel size in meters
         voxel_size = self.config["Mapping"].get("voxel_size", 0.1)  # Root voxel size in meters
 
-        # Build octree-based point cloud, xyz already in world coords, compute normals
-        pcd_world = o3d.geometry.PointCloud()
-        pcd_world.points = o3d.utility.Vector3dVector(xyz)
-        pcd_world.colors = o3d.utility.Vector3dVector(rgb)
+        cloud = mrnp.pointCloudFromPoints(xyz)
+        settings = mr.TriangulationHelpersSettings()
+        settings.numNeis = 16 # TODO can tune mesh/search params
+        allLocal = mr.buildUnitedLocalTriangulations(cloud, settings)
+        cloud.normals = mr.makeUnorientedNormals(
+            cloud, 
+            allLocal,
+            orient=mr.OrientNormals.TowardOrigin)
 
-        # Check if point cloud is empty
-        if not pcd_world.has_points():
-            raise ValueError("Input point cloud is empty")
-        
-        # Estimate normals before downsampling (TODO: tune params)
-        pcd_world.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-        )
-        pcd_world.orient_normals_consistent_tangent_plane(k=10)
-        cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
-        pcd_world.orient_normals_towards_camera_location(cam_pose)
-
-        new_xyz = np.asarray(pcd_world.points)
-        new_rgb = np.asarray(pcd_world.colors)
-        new_normals = np.asarray(pcd_world.normals)
+        new_xyz = xyz
+        new_rgb = rgb
+        new_normals = mrnp.toNumpyArray(cloud.normals)
 
         keys, inv = np.unique(
             np.floor(new_xyz / voxel_size).astype(int),
             axis=0, return_inverse=True)
         
         M = keys.shape[0]
-        # counts per voxel
-        counts = np.bincount(inv, minlength=M).astype(np.float32)  # (M,)
+        # Counts per voxel
+        counts = np.bincount(inv, minlength=M).astype(np.float32) # (M,)
 
-        # sum up xyz, rgb, normals per voxel
+        # Sum up xyz, rgb, normals per voxel
         centroids = np.zeros((M,3), dtype=np.float32)
         colors = np.zeros((M,3), dtype=np.float32)
         norms = np.zeros((M,3), dtype=np.float32)
@@ -230,7 +224,7 @@ class GaussianModel:
         np.add.at(colors, inv, new_rgb)
         np.add.at(norms, inv, new_normals)
 
-        # normalize to get mean & unit normals
+        # Normalize to get mean & unit normals
         centroids /= counts[:,None]
         colors /= counts[:,None]
         norms /= (np.linalg.norm(norms, axis=1, keepdims=True) + 1e-8)
