@@ -10,7 +10,6 @@ import torchvision
 import time
 import argparse
 
-
 def quaternion_to_rotation_matrix(qx, qy, qz, qw):
     norm = np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
     qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
@@ -20,7 +19,6 @@ def quaternion_to_rotation_matrix(qx, qy, qz, qw):
         [2 * qx * qz - 2 * qy * qw, 2 * qy * qz + 2 * qx * qw, 1 - 2 * qx * qx - 2 * qy * qy]
     ])
     return R
-
 
 def quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T_ab):
     """
@@ -39,7 +37,6 @@ def quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T_ab):
     T_B = T_ab @ T_A @ torch.inverse(T_ab)
     return T_B
 
-
 def transform_to_tensor(T):
     assert type(T) == torch.Tensor, "Transformation matrix must be a torch tensor"
     assert T.shape == (4, 4), "Transformation matrix must be 4x4"
@@ -50,7 +47,6 @@ def transform_to_tensor(T):
     r = R.from_matrix(R_mat)
     q = r.as_quat()
     return torch.tensor([t[0], t[1], t[2], q[0], q[1], q[2], q[3]])
-
 
 def transform_points(points, T_ab):
     """
@@ -69,53 +65,6 @@ def transform_points(points, T_ab):
     T[:4, :4] = T_ab
     transformed_points = (T @ points.T).T
     return transformed_points
-
-
-def project_lidar_to_depth(points, pose, intrinsic, H=512, W=640, max_depth=80):
-    """Project LiDAR points to depth map in GS coordinate system."""
-    fx, fy, cx, cy = intrinsic
-    points_xyz = points[:, :3]  # Extract x, y, z
-    points_homo = torch.cat([points_xyz, torch.ones(points_xyz.shape[0], 1, device=points.device)], dim=1)
-
-    # Convert pose to extrinsic (c2w in GS frame)
-    # Define transfrom FAST-LIVO2 to GS coordinate system
-    T = torch.tensor([
-        [0, -1, 0, 0],  # -y_fast = x_gs
-        [0, 0, -1, 0],  # -z_fast = y_gs
-        [1, 0, 0, 0],  # x_fast = z_gs
-        [0, 0, 0, 1]
-    ], dtype=torch.float32)
-    tx, ty, tz, qx, qy, qz, qw = pose.tolist()  # c2w matrix
-    w2c = torch.inverse(quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T))
-    # Transform points to camera frame
-    cam_points = torch.matmul(points_homo, w2c.T)
-    depths = cam_points[:, 2]
-    valid = (depths > 0.1) & (depths < max_depth)
-    cam_points = cam_points[valid]
-    depths = depths[valid]
-
-    if len(depths) == 0:
-        return torch.zeros(H, W, device=points.device)
-
-    x_norm = cam_points[:, 0] / depths
-    y_norm = cam_points[:, 1] / depths
-    u = fx * x_norm + cx
-    v = fy * y_norm + cy
-
-    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
-    u = u[valid].long()
-    v = v[valid].long()
-    depths = depths[valid]
-
-    depth_map = torch.zeros(H, W, device=points.device)
-    if valid.sum() > 0:
-        sorted_indices = torch.argsort(depths, descending=True)
-        u = u[sorted_indices]
-        v = v[sorted_indices]
-        depths = depths[sorted_indices]
-        depth_map[v, u] = depths
-    return depth_map
-
 
 def data_loader(queue, num_frames, dataset_path, coordinate_transform):
     batch_size = 10
@@ -168,7 +117,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--dataset", "-d",
-        default="../../dataset/CBD_Building_01_full",
+        default="../../dataset/CBD_Building_01",
         help="Path to local dataset w.r.t to the current working directory."
     )
     parser.add_argument(
@@ -178,7 +127,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--num_frames", "-n", type=int,
-        default=1180,
+        default=78,
         help="Number of frames to process."
     )
     args = parser.parse_args()

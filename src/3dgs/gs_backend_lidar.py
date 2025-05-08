@@ -232,7 +232,7 @@ class GSBackEnd(mp.Process):
                     render_pkg["visibility_filter"],
                     render_pkg["radii"],
                     render_pkg["n_touched"])
-
+                # loss_mapping += self.lambda_normal * get_loss_lidar_normal(self.gaussians) / 10.
                 loss_mapping += get_loss_mapping_rgb(self.config, image, viewpoint)
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
