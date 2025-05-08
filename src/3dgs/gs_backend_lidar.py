@@ -153,6 +153,7 @@ class GSBackEnd(mp.Process):
         eval_rendering_kf(self.viewpoints, self.gaussians, self.save_dir, self.background, iteration="after_opt")
 
     def add_next_kf(self, frame_idx, viewpoint, init=False, lidar_points=None):
+
         self.gaussians.extend_from_lidar_seq(
             viewpoint, kf_id=frame_idx, init=init, pcd=lidar_points
         )

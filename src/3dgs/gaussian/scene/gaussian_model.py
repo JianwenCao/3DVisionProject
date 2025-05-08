@@ -27,17 +27,122 @@ from gaussian.utils.general_utils import (
 )
 from gaussian.utils.graphics_utils import BasicPointCloud, getWorld2View2
 from gaussian.utils.sh_utils import RGB2SH
-from gaussian.utils.voxel_map_utils import buildVoxelMap, updateVoxelMap, voxel_down_sample, VOXEL_SIZE
+from gaussian.utils.voxel_map_utils import buildVoxelMap, updateVoxelMap, voxel_down_sample, VOXEL_SIZE, VOXEL_LOC
 from dataclasses import dataclass
+from typing import Dict, List, Tuple
+import psutil  # For dynamic memory-based size adjustment
 
-import uuid
-import json
+# import uuid
+# import json
 
 @dataclass
 class BasicPointCloud:
-    points: np.ndarray
-    colors: np.ndarray
-    normals: np.ndarray
+    """Represents a basic point cloud with positions, colors, and normals."""
+    points: np.ndarray  # (N, 3) array of 3D points
+    colors: np.ndarray  # (N, 3) array of RGB colors
+    normals: np.ndarray  # (N, 3) array of surface normals
+
+@dataclass
+class GaussianParams:
+    """Stores parameters for a Gaussian voxel, including position, features, and properties."""
+    xyz: torch.Tensor  # (3,) position of the Gaussian
+    features: torch.Tensor  # (3, sh_dim) spherical harmonics features
+    scales: torch.Tensor  # (3,) scaling factors for each axis
+    rots: torch.Tensor  # (4,) quaternion rotation
+    opacity: torch.Tensor  # (1,) opacity value
+    normal: torch.Tensor  # (3,) surface normal
+
+class SpatialHashTable:
+    """Manages a global map of Gaussian voxels with spatial hashing for efficient lookups."""
+    def __init__(self, max_global_size: int = 500000):
+        """
+        Initialize the SpatialHashTable.
+
+        Args:
+            max_global_size (int): Maximum number of voxels to store in global_map. Defaults to 500,000.
+        """
+        self.global_map: Dict[VOXEL_LOC, GaussianParams] = {}  # Maps voxel locations to their parameters (on CPU)
+        self.hash_table: Dict[VOXEL_LOC, int] = {}  # Maps voxel locations to indices in the sliding window
+        self.next_index = 0  # Incremental index for new voxels
+        self.max_global_size = max_global_size  # Limit for global_map size
+
+    def add(self, loc: VOXEL_LOC, params: GaussianParams) -> int:
+        """
+        Add a new voxel to the global map, ensuring it doesn't exceed max_global_size.
+
+        Args:
+            loc (VOXEL_LOC): The voxel location.
+            params (GaussianParams): Parameters of the Gaussian voxel.
+
+        Returns:
+            int: Index assigned to the voxel.
+        """
+        # If global_map is full, remove the oldest voxel
+        if len(self.global_map) >= self.max_global_size:
+            oldest_loc = next(iter(sorted(self.global_map.keys(), key=lambda k: self.hash_table[k], reverse=True)))
+            del self.global_map[oldest_loc]
+            del self.hash_table[oldest_loc]
+        # Store parameters on CPU to save GPU memory
+        self.global_map[loc] = GaussianParams(
+            xyz=params.xyz.cpu(),
+            features=params.features.cpu(),
+            scales=params.scales.cpu(),
+            rots=params.rots.cpu(),
+            opacity=params.opacity.cpu(),
+            normal=params.normal.cpu()
+        )
+        self.hash_table[loc] = self.next_index
+        self.next_index += 1
+        return self.next_index - 1
+
+    def get(self, loc: VOXEL_LOC) -> Tuple[GaussianParams, int]:
+        """
+        Retrieve a voxel's parameters from the global map, moving them to GPU if needed.
+
+        Args:
+            loc (VOXEL_LOC): The voxel location to query.
+
+        Returns:
+            Tuple[GaussianParams, int]: The voxel parameters (on GPU) and its index, or (None, -1) if not found.
+        """
+        if loc in self.global_map:
+            params = self.global_map[loc]
+            return GaussianParams(
+                xyz=params.xyz.cuda(),
+                features=params.features.cuda(),
+                scales=params.scales.cuda(),
+                rots=params.rots.cuda(),
+                opacity=params.opacity.cuda(),
+                normal=params.normal.cuda()
+            ), self.hash_table.get(loc, -1)
+        return None, -1
+
+    def update(self, loc: VOXEL_LOC, params: GaussianParams):
+        """
+        Update the parameters of a voxel in the global map, storing on CPU.
+
+        Args:
+            loc (VOXEL_LOC): The voxel location.
+            params (GaussianParams): Updated parameters.
+        """
+        self.global_map[loc] = GaussianParams(
+            xyz=params.xyz.cpu(),
+            features=params.features.cpu(),
+            scales=params.scales.cpu(),
+            rots=params.rots.cpu(),
+            opacity=params.opacity.cpu(),
+            normal=params.normal.cpu()
+        )
+
+    def remove_from_window(self, loc: VOXEL_LOC):
+        """
+        Remove a voxel from the sliding window's hash table.
+
+        Args:
+            loc (VOXEL_LOC): The voxel location to remove.
+        """
+        if loc in self.hash_table:
+            del self.hash_table[loc]
 
 class GaussianModel:
     def __init__(self, sh_degree: int, config=None):
@@ -77,8 +182,227 @@ class GaussianModel:
         self.octree_size = None
         self.octree_initialized = False
 
-        self.voxel_map = None
-        self.init_map = False
+        self.voxel_map = None  # Voxel map for downsampling point clouds
+
+        total_memory = torch.cuda.get_device_properties(0).total_memory  # Total GPU memory in bytes
+        allocated_memory = torch.cuda.memory_allocated(0)  # Currently allocated memory in bytes
+        free_memory = total_memory - allocated_memory
+        max_window_size = int(free_memory / (248 * 1.5))  # 248 bytes per voxel, 50% margin
+
+        # Dynamically set max_window_size based on GPU memory (248 bytes per voxel, 50% margin)
+        self.max_window_size = min(200000, max_window_size)  # Cap at 150,000 as per previous recommendation
+        # Dynamically set max_global_size based on CPU memory (248 bytes per voxel, 50% margin)
+        self.max_global_size = min(2000000, int(psutil.virtual_memory().available / (248 * 1.5)))
+        self.sht = SpatialHashTable(max_global_size=self.max_global_size)  # Spatial hash table for global map
+        self.cgb: List[Tuple[VOXEL_LOC, GaussianParams]] = []  # Current sliding window of Gaussian voxels
+        self.ggb = None  # GPU buffer for rendering (xyzs, features, scales, rots, opacities, normals)
+        self.prev_fov = None  # Previous field of view bounds
+        self.current_fov = None  # Current field of view bounds
+        print(f"Initialized LidarProcessor with max_window_size={self.max_window_size}, "
+              f"max_global_size={self.max_global_size}")
+
+    def _compute_fov_bounds(self, camera) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute the Axis-Aligned Bounding Box (AABB) of the camera's field of view (FoV).
+
+        Args:
+            camera: Camera object with FoVx, FoVy, R, and T attributes.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Minimum and maximum bounds of the FoV AABB.
+        """
+        h_fov = camera.FoVx  # Horizontal field of view in radians
+        v_fov = camera.FoVy  # Vertical field of view in radians
+        cam_pos = camera.T.cpu().numpy()  # Camera position
+        cam_rot = camera.R.cpu().numpy()  # Camera rotation matrix
+
+        near = 0.1  # Near plane distance
+        far = 100.0  # Far plane distance
+
+        # Compute the 8 corners of the FoV frustum
+        tan_h_fov_2 = np.tan(h_fov / 2)
+        tan_v_fov_2 = np.tan(v_fov / 2)
+        corners = np.array([
+            [-tan_h_fov_2, -tan_v_fov_2, near],
+            [tan_h_fov_2, -tan_v_fov_2, near],
+            [-tan_h_fov_2, tan_v_fov_2, near],
+            [tan_h_fov_2, tan_v_fov_2, near],
+            [-tan_h_fov_2, -tan_v_fov_2, far],
+            [tan_h_fov_2, -tan_v_fov_2, far],
+            [-tan_h_fov_2, tan_v_fov_2, far],
+            [tan_h_fov_2, tan_v_fov_2, far],
+        ])
+
+        # Transform corners to world coordinates
+        corners_world = (cam_rot @ corners.T).T + cam_pos
+        min_bounds = np.min(corners_world, axis=0)
+        max_bounds = np.max(corners_world, axis=0)
+
+        return min_bounds, max_bounds
+
+
+    def _is_in_fov(self, locs: List[VOXEL_LOC], min_bounds: np.ndarray, max_bounds: np.ndarray) -> np.ndarray:
+        """
+        Vectorized check to determine if voxels are within the camera's field of view.
+
+        Args:
+            locs (List[VOXEL_LOC]): List of voxel locations to check.
+            min_bounds (np.ndarray): Minimum bounds of the FoV AABB.
+            max_bounds (np.ndarray): Maximum bounds of the FoV AABB.
+
+        Returns:
+            np.ndarray: Boolean array indicating which voxels are within the FoV.
+        """
+        # Compute the center of each voxel
+        centers = np.array([(np.array([loc.x, loc.y, loc.z]) + 0.5) * VOXEL_SIZE for loc in locs])
+        # Check if centers are within the AABB bounds
+        in_fov = np.all(centers >= min_bounds, axis=1) & np.all(centers <= max_bounds, axis=1)
+        return in_fov
+
+    def _update_global_map(self, camera):
+        """
+        Update the global map by identifying and moving voxels outside the current FoV.
+
+        Step 1: Identify voxels from the previous sliding window that are still in the current FoV (OVERLAP).
+        Step 2: Mark voxels not in the current FoV as DELETE, store them in the global map, and compact the window.
+
+        Args:
+            camera: Camera object to compute the current FoV.
+        """
+        if self.prev_fov is None or self.current_fov is None:
+            return
+
+        min_bounds, max_bounds = self.current_fov
+        locs = [loc for loc, _ in self.cgb]
+        if not locs:
+            return
+
+        # Step 1: Identify which voxels are still in the FoV
+        in_fov = self._is_in_fov(locs, min_bounds, max_bounds)
+        to_delete = [i for i, keep in enumerate(in_fov) if not keep]
+
+        # Step 2: Delete and compact the sliding window
+        if to_delete:
+            to_delete = sorted(to_delete, reverse=True)
+            for i in to_delete:
+                loc, params = self.cgb[i]
+                self.sht.update(loc, params)  # Store in global map (on CPU)
+                if i < len(self.cgb) - 1:
+                    # Swap with the last element to maintain contiguous memory
+                    self.cgb[i], self.cgb[-1] = self.cgb[-1], self.cgb[i]
+                    loc, _ = self.cgb[i]
+                    self.sht.hash_table[loc] = i
+                self.cgb.pop()
+                self.sht.remove_from_window(loc)
+
+    def _append_new_voxels(self, new_xyz: np.ndarray, new_rgb: np.ndarray, new_normals: np.ndarray):
+        """
+        Append new voxels to the sliding window after identifying overlaps with the previous window.
+
+        Step 3: Identify new voxels (ADD) that don't overlap with existing ones in the window.
+        Step 4: Append new voxels to the sliding window (CGB) and update the spatial hash table.
+
+        Args:
+            new_xyz (np.ndarray): (N, 3) array of new point positions.
+            new_rgb (np.ndarray): (N, 3) array of new point colors.
+            new_normals (np.ndarray): (N, 3) array of new point normals.
+        """
+        device = "cuda"
+        sh_dim = (self.max_sh_degree + 1) ** 2
+
+        # Step 3: Compute voxel locations and identify new voxels (ADD)
+        locs = set()
+        for point in new_xyz:
+            loc_xyz = point / VOXEL_SIZE
+            loc_xyz[loc_xyz < 0] -= 1.0
+            loc = VOXEL_LOC(int(loc_xyz[0]), int(loc_xyz[1]), int(loc_xyz[2]))
+            locs.add(loc)
+
+        add_indices = []
+        add_locs = []
+        for i, point in enumerate(new_xyz):
+            loc_xyz = point / VOXEL_SIZE
+            loc_xyz[loc_xyz < 0] -= 1.0
+            loc = VOXEL_LOC(int(loc_xyz[0]), int(loc_xyz[1]), int(loc_xyz[2]))
+            if loc not in self.sht.hash_table and loc in locs:
+                add_indices.append(i)
+                add_locs.append(loc)
+
+        if not add_indices:
+            return
+
+        # Step 4: Create Gaussian parameters for new voxels
+        add_xyz = torch.from_numpy(new_xyz[add_indices]).float().to(device).requires_grad_(False)
+        add_rgb = torch.from_numpy(new_rgb[add_indices]).float().to(device).requires_grad_(False)
+        add_normals = torch.from_numpy(new_normals[add_indices]).float().to(device).requires_grad_(False)
+
+        # Initialize scales (log-space for numerical stability)
+        s_xy = torch.full((len(add_indices),), VOXEL_SIZE, device=device)
+        s_delta = torch.full_like(s_xy, 0.01)
+        scales = torch.log(torch.stack([s_xy, s_xy, s_delta], dim=-1)).requires_grad_(False)
+
+        # Compute rotations based on normals
+        ex = torch.tensor([1.0, 0.0, 0.0], device=device).float().expand(len(add_indices), -1)
+        cross_ex_n = torch.cross(ex, add_normals)
+        cross_norm = torch.norm(cross_ex_n, dim=1, keepdim=True)
+        u = cross_ex_n / (cross_norm + 1e-6)
+        v = torch.cross(add_normals, u)
+        rotation_matrix = torch.stack([u, v, add_normals], dim=-1)
+        rots = self.batch_matrix_to_quaternion(rotation_matrix).requires_grad_(False)
+
+        # Initialize features and opacities
+        features = torch.zeros((len(add_indices), 3, sh_dim), device=device, dtype=torch.float32).requires_grad_(False)
+        features[:, :3, 0] = RGB2SH(add_rgb)
+        opacities = inverse_sigmoid(
+            0.5 * torch.ones((len(add_indices), 1), device=device, dtype=torch.float32)).requires_grad_(False)
+
+        # Append to CGB and update SHT
+        print(f"Add {len(add_locs)} number of new voxel to CGB, current CGB size: {len(self.cgb)}")
+        for i, (loc, xyz, feature, scale, rot, opacity, normal) in enumerate(
+                zip(add_locs, add_xyz, features, scales, rots, opacities, add_normals)
+        ):
+            params = GaussianParams(
+                xyz=xyz,
+                features=feature,
+                scales=scale,
+                rots=rot,
+                opacity=opacity,
+                normal=normal
+            )
+            if len(self.cgb) < self.max_window_size:
+                self.sht.add(loc, params)
+                self.cgb.append((loc, params))
+            else:
+                print(f"Warning：CGB is full（Maximum capacity {self.max_window_size}），ignore new voxel {loc}")
+
+    def _sync_to_ggb(self):
+        """
+        Synchronize the sliding window (CGB) to the GPU buffer (GGB) for rendering.
+
+        Step 5: Transfer CGB data to GGB, which is used by the renderer.
+        """
+        if not self.cgb:
+            self.ggb = None
+            return
+
+        device = "cuda"
+
+        # Concatenate parameters into contiguous tensors for efficient rendering
+        xyzs = torch.cat([params.xyz.unsqueeze(0) for _, params in self.cgb], dim=0).to(device).requires_grad_(False)
+        features = torch.cat([params.features.unsqueeze(0) for _, params in self.cgb], dim=0).to(device).requires_grad_(False)
+        scales = torch.cat([params.scales.unsqueeze(0) for _, params in self.cgb], dim=0).to(device).requires_grad_(False)
+        rots = torch.cat([params.rots.unsqueeze(0) for _, params in self.cgb], dim=0).to(device).requires_grad_(False)
+        opacities = torch.cat([params.opacity.unsqueeze(0) for _, params in self.cgb], dim=0).to(device).requires_grad_(False)
+        normals = torch.cat([params.normal.unsqueeze(0) for _, params in self.cgb], dim=0).to(device).requires_grad_(False)
+
+        self.ggb = (xyzs, features, scales, rots, opacities, normals)
+
+        # Log GPU memory usage for monitoring
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(device) / 1024 / 1024
+            max_allocated = torch.cuda.max_memory_allocated(device) / 1024 / 1024
+            reserved = torch.cuda.memory_reserved(device) / 1024 / 1024
+            print(f"GPU memory: {allocated:.2f} MiB is allocated, {max_allocated:.2f} MiB peak, {reserved:.2f} MiB researved")
 
     @property
     def get_scaling(self):
@@ -359,61 +683,40 @@ class GaussianModel:
     #
     #     return fused_point_cloud, features, scales, rots, opacities, normals_cuda
 
-    def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
+    def create_pcd_from_lidar_points(self, camera, xyz: np.ndarray, rgb: np.ndarray, init: bool = False):
+        # Update the field of view
+        self.prev_fov = self.current_fov
+        self.current_fov = self._compute_fov_bounds(camera)
+
+        # Build or update the voxel map
         if init or self.voxel_map is None:
             self.voxel_map = buildVoxelMap(xyz, rgb)
+            print(f"Building voxel map，including {len(self.voxel_map)} number of voxel")
         else:
             updateVoxelMap(xyz, self.voxel_map, rgb)
+            print(f"Updating voxel map，including {len(self.voxel_map)} number of voxel")
 
-        # Voxel-based down sample
+        # Downsample the point cloud to create voxels
         new_xyz, new_rgb, new_normals = voxel_down_sample(self.voxel_map)
 
-        pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
-        self.ply_input = pcd
+        # Step 1 & 2: Update the global map, remove and compact voxels outside FoV
+        self._update_global_map(camera)
 
-        M = new_xyz.shape[0]
-        device = "cuda"
+        # Step 3 & 4: Identify and append new voxels to the sliding window
+        self._append_new_voxels(new_xyz, new_rgb, new_normals)
 
-        # Scale
-        s_xy = torch.full((M,), VOXEL_SIZE, device=device)
-        s_delta = torch.full_like(s_xy, 0.01)
-        scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)
-        self.scales = torch.log(scales)
+        # Step 5: Sync the sliding window to the GPU buffer
+        self._sync_to_ggb()
 
-        # Rotation Matrix (3x3)
-        ex = torch.tensor([1.0, 0.0, 0.0], device=device).float()
-        normals_tensor = torch.from_numpy(new_normals).float().to(device)
-        cross_ex_n = torch.cross(ex.unsqueeze(0).expand(M, -1), normals_tensor)
-        cross_norm = torch.norm(cross_ex_n, dim=1, keepdim=True)
-        u = cross_ex_n / (cross_norm + 1e-6)
-        v = torch.cross(normals_tensor, u)
-        rotation_matrix = torch.stack([u, v, normals_tensor], dim=-1)  # (M, 3, 3)
+        if self.ggb is None:
+            device = "cuda"
+            sh_dim = (self.max_sh_degree + 1) ** 2
+            empty = torch.zeros((0, 3), device=device)
+            return (empty, torch.zeros((0, 3, sh_dim), device=device), torch.zeros((0, 3), device=device),
+                    torch.zeros((0, 4), device=device), torch.zeros((0, 1), device=device), empty)
 
-        rots = self.batch_matrix_to_quaternion(rotation_matrix)
-        self.rotations = rots
+        return self.ggb
 
-        S = torch.diag_embed(scales)
-        R = rotation_matrix
-        RS = torch.matmul(R, S)
-        self.cov3d = torch.matmul(RS, RS.transpose(-2, -1))
-
-        fused_point_cloud = torch.from_numpy(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.from_numpy(np.asarray(pcd.colors)).float().cuda())
-        features = torch.zeros(
-            (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
-            device="cuda", dtype=torch.float32
-        )
-        features[:, :3, 0] = fused_color
-        features[:, 3:, 1:] = 0.0
-
-        num_points = fused_point_cloud.shape[0]
-        opacities = inverse_sigmoid(
-            0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
-        )
-
-        # 返回值
-        normals = torch.from_numpy(new_normals).float().cuda()
-        return fused_point_cloud, features, self.scales, rots, opacities, normals
 
     @staticmethod
     def batch_gaussian_rotation(normals: torch.Tensor) -> torch.Tensor:
