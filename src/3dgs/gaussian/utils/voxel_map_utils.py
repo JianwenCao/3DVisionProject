@@ -1,6 +1,7 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
+import time
 
 HASH_P = 116101
 MAX_N = 10000000000
@@ -77,14 +78,94 @@ def calcBodyCov(pb: np.ndarray, range_inc: float = RANGE_INC, degree_inc: float 
            A @ direction_var @ A.T)
     return cov
 
-def generate_pv_list(points: np.ndarray, rgb: Optional[np.ndarray] = None) -> List[pointWithCov]:
-    pv_list = []
-    for i, point in enumerate(points):
-        cov = calcBodyCov(point)
-        rgb_i = rgb[i] if rgb is not None and i < len(rgb) else None
-        pv = pointWithCov(point=point, cov=cov, rgb=rgb_i)
-        pv_list.append(pv)
-    return pv_list
+def calcBodyCov_batch(
+    pb: np.ndarray,
+    range_inc: float  = RANGE_INC,
+    degree_inc: float = DEGREE_INC,
+) -> np.ndarray:
+    """
+    Vectorised version of `calcBodyCov`.
+    Parameters
+    ----------
+    pb : (N, 3) array
+        3‑D points expressed in the body frame.
+    Returns
+    -------
+    cov : (N, 3, 3) array
+        One 3 × 3 covariance matrix per input point.
+    """
+    pb         = np.asarray(pb)
+    N          = pb.shape[0]
+
+    # --- common scalars/arrays ------------------------------------------------
+    rng        = np.linalg.norm(pb, axis=1)                        # (N,)
+    rng_var    = range_inc ** 2
+    sin_sq     = np.sin(DEG2RAD * degree_inc) ** 2                 # scalar
+
+    # --- normalised directions ----------------------------------------------
+    d          = pb / (rng[:, None] + 1e-6)                        # (N,3)
+
+    # --- skew‑symmetric matrices  (N,3,3) ------------------------------------
+    d_hat      = np.zeros((N, 3, 3))
+    d_hat[:, 0, 1] = -d[:, 2]
+    d_hat[:, 0, 2] =  d[:, 1]
+    d_hat[:, 1, 0] =  d[:, 2]
+    d_hat[:, 1, 2] = -d[:, 0]
+    d_hat[:, 2, 0] = -d[:, 1]
+    d_hat[:, 2, 1] =  d[:, 0]
+
+    # --- two orthogonal basis vectors for the tangent plane ------------------
+    b1         = np.stack([ np.ones(N),
+                            np.ones(N),
+                           -(d[:, 0] + d[:, 1]) / (d[:, 2] + 1e-6)], axis=1)
+    b1        /= np.linalg.norm(b1, axis=1, keepdims=True) + 1e-6
+
+    b2         = np.cross(b1, d)
+    b2        /= np.linalg.norm(b2, axis=1, keepdims=True) + 1e-6
+
+    N_mat      = np.stack([b1, b2], axis=2)                        # (N,3,2)
+
+    # --- A = range * (d̂ · N) -----------------------------------------------
+    A          = rng[:, None, None] * (d_hat @ N_mat)              # (N,3,2)
+
+    # --- final covariance ----------------------------------------------------
+    dir_outer  = rng_var * d[:, :, None] * d[:, None, :]           # (N,3,3)
+    B          = A * sin_sq                                        # (N,3,2)
+    cov2       = B @ A.transpose(0, 2, 1)                          # (N,3,3)
+
+    return dir_outer + cov2
+
+# def generate_pv_list(points: np.ndarray, rgb: Optional[np.ndarray] = None) -> List[pointWithCov]:
+#     pv_list = []
+#     for i, point in enumerate(points):
+#         cov = calcBodyCov(point)
+#         rgb_i = rgb[i] if rgb is not None and i < len(rgb) else None
+#         pv = pointWithCov(point=point, cov=cov, rgb=rgb_i)
+#         pv_list.append(pv)
+#     return pv_list
+
+def generate_pv_list(
+    points: np.ndarray,
+    rgb:    Optional[np.ndarray] = None
+) -> List[pointWithCov]:
+    """
+    Vectorised replacement of the original `generate_pv_list`.
+    Works with or without an RGB array of shape (N, 3).
+    """
+    points = np.asarray(points)
+    covs   = calcBodyCov_batch(points)
+
+    if rgb is not None:
+        rgb = np.asarray(rgb)
+
+    return [
+        pointWithCov(
+            point=pt,
+            cov=cov,
+            rgb=(rgb[i] if rgb is not None and i < len(rgb) else None)
+        )
+        for i, (pt, cov) in enumerate(zip(points, covs))
+    ]
 
 class OctoTree:
     def __init__(self, layer: int):
@@ -312,7 +393,9 @@ def buildVoxelMap(input_points: np.ndarray, rgb: Optional[np.ndarray] = None) ->
     return voxel_map
 
 def updateVoxelMap(input_points: np.ndarray, voxel_map: Dict[VOXEL_LOC, OctoTree], rgb: Optional[np.ndarray] = None):
+    t0 = time.time()
     pv_list = generate_pv_list(input_points, rgb)
+
     for pv in pv_list:
         loc_xyz = pv.point / VOXEL_SIZE
         loc_xyz[loc_xyz < 0] -= 1.0
@@ -325,6 +408,8 @@ def updateVoxelMap(input_points: np.ndarray, voxel_map: Dict[VOXEL_LOC, OctoTree
             octo_tree.voxel_center = (np.array([position.x, position.y, position.z]) + 0.5) * VOXEL_SIZE
             octo_tree.UpdateOctoTree(pv)
             voxel_map[position] = octo_tree
+    t1 = time.time()
+    print(t1-t0)
 
 def voxel_down_sample(voxel_map: Dict[VOXEL_LOC, OctoTree]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     points = []
