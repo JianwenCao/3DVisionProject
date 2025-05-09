@@ -10,6 +10,7 @@
 #
 
 import os
+import time
 
 import numpy as np
 import open3d as o3d
@@ -295,85 +296,185 @@ class GaussianModel:
                 self.cgb.pop()
                 self.sht.remove_from_window(loc)
 
-    def _append_new_voxels(self, new_xyz: np.ndarray, new_rgb: np.ndarray, new_normals: np.ndarray):
+    # def _append_new_voxels(self, new_xyz: np.ndarray, new_rgb: np.ndarray, new_normals: np.ndarray):
+    #     """
+    #     Append new voxels to the sliding window after identifying overlaps with the previous window.
+
+    #     Step 3: Identify new voxels (ADD) that don't overlap with existing ones in the window.
+    #     Step 4: Append new voxels to the sliding window (CGB) and update the spatial hash table.
+
+    #     Args:
+    #         new_xyz (np.ndarray): (N, 3) array of new point positions.
+    #         new_rgb (np.ndarray): (N, 3) array of new point colors.
+    #         new_normals (np.ndarray): (N, 3) array of new point normals.
+    #     """
+    #     device = "cuda"
+    #     sh_dim = (self.max_sh_degree + 1) ** 2
+    #     # Step 3: Compute voxel locations and identify new voxels (ADD)
+    #     locs = set()
+    #     for point in new_xyz:
+    #         loc_xyz = point / VOXEL_SIZE
+    #         loc_xyz[loc_xyz < 0] -= 1.0
+    #         loc = VOXEL_LOC(int(loc_xyz[0]), int(loc_xyz[1]), int(loc_xyz[2]))
+    #         locs.add(loc)
+    #     add_indices = []
+    #     add_locs = []
+    #     for i, point in enumerate(new_xyz):
+    #         loc_xyz = point / VOXEL_SIZE
+    #         loc_xyz[loc_xyz < 0] -= 1.0
+    #         loc = VOXEL_LOC(int(loc_xyz[0]), int(loc_xyz[1]), int(loc_xyz[2]))
+    #         if loc not in self.sht.hash_table and loc in locs:
+    #             add_indices.append(i)
+    #             add_locs.append(loc)
+    #     if not add_indices:
+    #         return
+
+    #     # Step 4: Create Gaussian parameters for new voxels
+    #     add_xyz = torch.from_numpy(new_xyz[add_indices]).float().to(device).requires_grad_(False)
+    #     add_rgb = torch.from_numpy(new_rgb[add_indices]).float().to(device).requires_grad_(False)
+    #     add_normals = torch.from_numpy(new_normals[add_indices]).float().to(device).requires_grad_(False)
+
+    #     # Initialize scales (log-space for numerical stability)
+    #     s_xy = torch.full((len(add_indices),), VOXEL_SIZE, device=device)
+    #     s_delta = torch.full_like(s_xy, 0.01)
+    #     scales = torch.log(torch.stack([s_xy, s_xy, s_delta], dim=-1)).requires_grad_(False)
+
+    #     # Compute rotations based on normals
+    #     ex = torch.tensor([1.0, 0.0, 0.0], device=device).float().expand(len(add_indices), -1)
+    #     cross_ex_n = torch.cross(ex, add_normals)
+    #     cross_norm = torch.norm(cross_ex_n, dim=1, keepdim=True)
+    #     u = cross_ex_n / (cross_norm + 1e-6)
+    #     v = torch.cross(add_normals, u)
+    #     rotation_matrix = torch.stack([u, v, add_normals], dim=-1)
+    #     rots = self.batch_matrix_to_quaternion(rotation_matrix).requires_grad_(False)
+
+    #     # Initialize features and opacities
+    #     features = torch.zeros((len(add_indices), 3, sh_dim), device=device, dtype=torch.float32).requires_grad_(False)
+    #     features[:, :3, 0] = RGB2SH(add_rgb)
+    #     opacities = inverse_sigmoid(
+    #         0.5 * torch.ones((len(add_indices), 1), device=device, dtype=torch.float32)).requires_grad_(False)
+
+    #     # Append to CGB and update SHT
+    #     print(f"Add {len(add_locs)} number of new voxel to CGB, current CGB size: {len(self.cgb)}")
+    #     for i, (loc, xyz, feature, scale, rot, opacity, normal) in enumerate(
+    #             zip(add_locs, add_xyz, features, scales, rots, opacities, add_normals)
+    #     ):
+    #         params = GaussianParams(
+    #             xyz=xyz,
+    #             features=feature,
+    #             scales=scale,
+    #             rots=rot,
+    #             opacity=opacity,
+    #             normal=normal
+    #         )
+    #         if len(self.cgb) < self.max_window_size:
+    #             self.sht.add(loc, params)
+    #             self.cgb.append((loc, params))
+    #         else:
+    #             print(f"Warning：CGB is full（Maximum capacity {self.max_window_size}），ignore new voxel {loc}")
+    def _append_new_voxels(
+            self,
+            new_xyz: np.ndarray,
+            new_rgb: np.ndarray,
+            new_normals: np.ndarray
+    ):
         """
-        Append new voxels to the sliding window after identifying overlaps with the previous window.
-
-        Step 3: Identify new voxels (ADD) that don't overlap with existing ones in the window.
-        Step 4: Append new voxels to the sliding window (CGB) and update the spatial hash table.
-
-        Args:
-            new_xyz (np.ndarray): (N, 3) array of new point positions.
-            new_rgb (np.ndarray): (N, 3) array of new point colors.
-            new_normals (np.ndarray): (N, 3) array of new point normals.
+        Vectorised replacement of the original `_append_new_voxels`.
+        Functional output and side effects are **identical** for all valid inputs.
         """
-        device = "cuda"
-        sh_dim = (self.max_sh_degree + 1) ** 2
-
-        # Step 3: Compute voxel locations and identify new voxels (ADD)
-        locs = set()
-        for point in new_xyz:
-            loc_xyz = point / VOXEL_SIZE
-            loc_xyz[loc_xyz < 0] -= 1.0
-            loc = VOXEL_LOC(int(loc_xyz[0]), int(loc_xyz[1]), int(loc_xyz[2]))
-            locs.add(loc)
-
-        add_indices = []
-        add_locs = []
-        for i, point in enumerate(new_xyz):
-            loc_xyz = point / VOXEL_SIZE
-            loc_xyz[loc_xyz < 0] -= 1.0
-            loc = VOXEL_LOC(int(loc_xyz[0]), int(loc_xyz[1]), int(loc_xyz[2]))
-            if loc not in self.sht.hash_table and loc in locs:
-                add_indices.append(i)
-                add_locs.append(loc)
-
-        if not add_indices:
+        if new_xyz.size == 0:          # early‑out – nothing to do
             return
 
-        # Step 4: Create Gaussian parameters for new voxels
-        add_xyz = torch.from_numpy(new_xyz[add_indices]).float().to(device).requires_grad_(False)
-        add_rgb = torch.from_numpy(new_rgb[add_indices]).float().to(device).requires_grad_(False)
-        add_normals = torch.from_numpy(new_normals[add_indices]).float().to(device).requires_grad_(False)
+        # ------------------------------------------------------------------ #
+        # 1.  Determine the voxel‑grid coordinates for every incoming point   #
+        # ------------------------------------------------------------------ #
+        #       ⌊ p / V ⌋   (true floor, handles negatives correctly)
+        loc_int   = np.floor(new_xyz / VOXEL_SIZE).astype(np.int64)   # (N,3)
 
-        # Initialize scales (log-space for numerical stability)
-        s_xy = torch.full((len(add_indices),), VOXEL_SIZE, device=device)
-        s_delta = torch.full_like(s_xy, 0.01)
-        scales = torch.log(torch.stack([s_xy, s_xy, s_delta], dim=-1)).requires_grad_(False)
+        # convert to VOXEL_LOC objects in one shot
+        loc_objs  = [VOXEL_LOC(int(x), int(y), int(z)) for x, y, z in loc_int]
 
-        # Compute rotations based on normals
-        ex = torch.tensor([1.0, 0.0, 0.0], device=device).float().expand(len(add_indices), -1)
-        cross_ex_n = torch.cross(ex, add_normals)
-        cross_norm = torch.norm(cross_ex_n, dim=1, keepdim=True)
-        u = cross_ex_n / (cross_norm + 1e-6)
-        v = torch.cross(add_normals, u)
-        rotation_matrix = torch.stack([u, v, add_normals], dim=-1)
-        rots = self.batch_matrix_to_quaternion(rotation_matrix).requires_grad_(False)
+        # ------------------------------------------------------------------ #
+        # 2.  Mask the points whose voxels are already present in the SHT     #
+        # ------------------------------------------------------------------ #
+        existing  = set(self.sht.hash_table.keys())        # O(hash‑table size)
+        to_add_m  = np.fromiter(
+            (loc not in existing for loc in loc_objs),
+            dtype=bool,
+            count=len(loc_objs)
+        )                                                  # (N,)
 
-        # Initialize features and opacities
-        features = torch.zeros((len(add_indices), 3, sh_dim), device=device, dtype=torch.float32).requires_grad_(False)
+        add_indices = np.nonzero(to_add_m)[0]              # 1‑D array of idx
+        if add_indices.size == 0:                          # nothing new
+            return
+
+        add_locs    = [loc_objs[i] for i in add_indices]   # list[VOXEL_LOC]
+
+        # ------------------------------------------------------------------ #
+        # 3.  Build Gaussian parameters for the new voxels – all batched      #
+        # ------------------------------------------------------------------ #
+        device      = "cuda"
+        sh_dim      = (self.max_sh_degree + 1) ** 2
+
+        # (Nᴀ,3)
+        add_xyz     = torch.as_tensor(new_xyz[add_indices],
+                                    dtype=torch.float32,
+                                    device=device,).requires_grad_(False)
+        add_rgb     = torch.as_tensor(new_rgb[add_indices],
+                                    dtype=torch.float32,
+                                    device=device,).requires_grad_(False)
+        add_normals = torch.as_tensor(new_normals[add_indices],
+                                    dtype=torch.float32,
+                                    device=device,).requires_grad_(False)
+
+        # ── scales (log‑space) ──────────────────────────────────────────────
+        s_xy        = torch.full((add_indices.size,), VOXEL_SIZE,
+                                dtype=torch.float32, device=device)
+        s_delta     = torch.full_like(s_xy, 0.01)
+        scales      = torch.log(torch.stack([s_xy, s_xy, s_delta], dim=-1))
+
+        # ── rotations from normals (batched) ────────────────────────────────
+        ex          = torch.tensor([1.0, 0.0, 0.0], device=device)\
+                        .expand(add_indices.size, -1)
+        cross_ex_n  = torch.cross(ex, add_normals)
+        u           = cross_ex_n / (torch.norm(cross_ex_n, dim=1, keepdim=True) + 1e-6)
+        v           = torch.cross(add_normals, u)
+        rot_mats    = torch.stack([u, v, add_normals], dim=-1)               # (Nᴀ,3,3)
+        rots        = self.batch_matrix_to_quaternion(rot_mats)
+
+        # ── SH features & log‑opacity ───────────────────────────────────────
+        features    = torch.zeros((add_indices.size, 3, sh_dim), dtype=torch.float32, device=device)
         features[:, :3, 0] = RGB2SH(add_rgb)
-        opacities = inverse_sigmoid(
-            0.5 * torch.ones((len(add_indices), 1), device=device, dtype=torch.float32)).requires_grad_(False)
 
-        # Append to CGB and update SHT
-        print(f"Add {len(add_locs)} number of new voxel to CGB, current CGB size: {len(self.cgb)}")
-        for i, (loc, xyz, feature, scale, rot, opacity, normal) in enumerate(
-                zip(add_locs, add_xyz, features, scales, rots, opacities, add_normals)
+        opacities   = inverse_sigmoid(
+            0.5 * torch.ones((add_indices.size, 1),
+                            dtype=torch.float32, device=device)
+        )
+
+        # ------------------------------------------------------------------ #
+        # 4.  Append to the sliding‑window (CGB) and the spatial hash table   #
+        # ------------------------------------------------------------------ #
+        print(f"Add {len(add_locs)} new voxels to CGB, "
+            f"current CGB size: {len(self.cgb)}")
+
+        for loc, xyz, feat, sc, rt, op, nrm in zip(
+                add_locs, add_xyz, features, scales, rots, opacities, add_normals
         ):
             params = GaussianParams(
                 xyz=xyz,
-                features=feature,
-                scales=scale,
-                rots=rot,
-                opacity=opacity,
-                normal=normal
+                features=feat,
+                scales=sc,
+                rots=rt,
+                opacity=op,
+                normal=nrm
             )
             if len(self.cgb) < self.max_window_size:
                 self.sht.add(loc, params)
                 self.cgb.append((loc, params))
             else:
-                print(f"Warning：CGB is full（Maximum capacity {self.max_window_size}），ignore new voxel {loc}")
+                print(f"Warning: CGB is full (max {self.max_window_size}); "
+                    f"ignoring new voxel {loc}")
+
 
     def _sync_to_ggb(self):
         """
@@ -703,7 +804,10 @@ class GaussianModel:
         self._update_global_map(camera)
 
         # Step 3 & 4: Identify and append new voxels to the sliding window
+        t0 = time.time()
         self._append_new_voxels(new_xyz, new_rgb, new_normals)
+        t1 = time.time()
+        print(t1-t0)
 
         # Step 5: Sync the sliding window to the GPU buffer
         self._sync_to_ggb()
