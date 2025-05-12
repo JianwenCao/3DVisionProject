@@ -18,6 +18,15 @@ from gaussian.utils.eval_utils import eval_rendering, eval_rendering_kf
 from gaussian.gui import gui_utils, slam_gui
 
 
+def print_gpu_mem(tag=""):
+    torch.cuda.synchronize()
+    alloc   = torch.cuda.memory_allocated()  / 1024**2   # MB
+    reserv  = torch.cuda.memory_reserved()  / 1024**2
+    peak    = torch.cuda.max_memory_allocated() / 1024**2
+    print(f"[{tag}] GPU   alloc {alloc:7.1f} MB | reserved {reserv:7.1f} MB | peak {peak:7.1f} MB")
+    torch.cuda.reset_peak_memory_stats()
+
+
 class GSBackEnd(mp.Process):
     def __init__(self, config, save_dir, use_gui=False):
         super().__init__()
@@ -53,6 +62,8 @@ class GSBackEnd(mp.Process):
             gui_process = mp.Process(target=slam_gui.run, args=(self.params_gui,))
             gui_process.start()
             time.sleep(3)
+        
+        self.debug = True
 
     def set_hyperparams(self):
         self.init_itr_num = self.config["Training"]["init_itr_num"]
@@ -157,6 +168,11 @@ class GSBackEnd(mp.Process):
             viewpoint, kf_id=frame_idx, init=init, pcd=lidar_points
         )
 
+        if self.debug:
+            print(f"Added new keyframe {frame_idx} with {self.gaussians.num_points} points")
+            optimizer_state_size = sum(p.numel() * 4 for group in self.gaussians.optimizer.param_groups for p in group["params"])
+            print(f"Optimizer state size after extend_from_lidar_seq: {optimizer_state_size / 1024**3:.3f} GB")
+
     def reset(self):
         self.iteration_count = 0
         self.current_window = []
@@ -203,6 +219,10 @@ class GSBackEnd(mp.Process):
         return render_pkg
 
     def map(self, current_window, iters, prune=False):
+        if self.debug:
+            print("\n")
+            print_gpu_mem('Loop start, map')
+
         if len(current_window) == 0:
             return
 
@@ -263,6 +283,10 @@ class GSBackEnd(mp.Process):
                 #         self.size_threshold,
                 #     )
 
+                # print_gpu_mem('Before prune')
+                # TODO ADD MODIFIED PRUNE LOGIC HERE, optimize only points in view
+                # print_gpu_mem('After prune')
+
                 self.gaussian_reset = 501
                 if (self.iteration_count % self.gaussian_reset) == 0 and (not update_gaussian):
                     Log("Resetting the opacity of non-visible Gaussians")
@@ -270,6 +294,8 @@ class GSBackEnd(mp.Process):
 
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
+        if self.debug:
+            print_gpu_mem('After 10 opt steps')
 
     def color_refinement(self, iteration_total):
         Log("Starting color refinement")

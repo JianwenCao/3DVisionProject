@@ -6,7 +6,7 @@ opt_params:
   position_lr_max_steps: 2000
   feature_lr: 0.0025
   opacity_lr: 0.1
-  scaling_lr: 0.005
+  scaling_lr: 0.001
   rotation_lr: 0.001
   percent_dense: 0.01
   lambda_dssim: 0.2
