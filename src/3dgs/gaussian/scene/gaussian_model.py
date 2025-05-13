@@ -34,6 +34,24 @@ from scipy.spatial.transform import Rotation as R
 from gaussian.scene.global_voxel_map import GlobalVoxelMap, GlobalVoxelSlot
 import time
 
+def print_gpu_mem(tag=""):
+    torch.cuda.synchronize()
+    alloc   = torch.cuda.memory_allocated()  / 1024**2   # MB
+    reserv  = torch.cuda.memory_reserved()  / 1024**2
+    peak    = torch.cuda.max_memory_allocated() / 1024**2
+    print(f"[{tag}] GPU   alloc {alloc:7.1f} MB | reserved {reserv:7.1f} MB | peak {peak:7.1f} MB")
+    torch.cuda.reset_peak_memory_stats()
+
+def print_gaussian_counts(gaussians, gvm, tag=""):
+    print(f"[{tag}]   active_GPU = {gaussians._xyz.shape[0]:,}"
+          f"   | active_keys = {len(gvm.active_keys):,}"
+          f"   | total_voxels = {len(gvm.map):,}")
+
+def assert_indices_consistent(gaussians, gvm):
+    bad = [k for k in gvm.active_keys
+           if gvm.map[k].cgb_idx < 0
+           or gvm.map[k].cgb_idx >= gaussians._xyz.shape[0]]
+    assert not bad, f"Found stale cgb_idx in {len(bad)} voxel-slots"
 
 class GaussianModel:
     def __init__(self, sh_degree: int, config=None):
@@ -70,12 +88,6 @@ class GaussianModel:
         self.isotropic = False
 
         self.normals = torch.empty(0, 3, device="cuda")
-
-        self.octree = None
-        self.octree_size = None
-        self.octree_initialized = False
-        self.global_points = []  # Store global point cloud points
-        self.global_colors = []  # Store global point cloud colors
 
         self.global_voxel_map = GlobalVoxelMap(config)
 
@@ -415,34 +427,18 @@ class GaussianModel:
 
         t1 = time.perf_counter()
 
-        # Compute voxel spatial keys
-        pts_np = fused_point_cloud.cpu().numpy() # (M,3)
-        keys = np.floor(pts_np / self.global_voxel_map.voxel_size).astype(np.int32) # (M,3)
-
-        # Find voxels that are not full (mask_np)
-        default_slot = GlobalVoxelSlot()
-        counts = np.fromiter(
-            ( self.global_voxel_map.map.get(tuple(k), default_slot).count
-            for k in keys ),
-            dtype=np.int32,
-            count=keys.shape[0]
-        )
-        mask_np = counts < self.global_voxel_map.max_points_per_voxel
-        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device)
-        
-        t2 = time.perf_counter()
-
+        gvm = self.global_voxel_map
         # Insert map points in only under-filled voxels
-        new_pts = pts_np[mask_np]
-        keys_to_init = self.global_voxel_map.insert_points(new_pts)
-
-        t3 = time.perf_counter()
+        mask_np, keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
+        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device) # TODO check device
+        t2 = time.perf_counter()
 
         # Frustum-cull & update sliding-window with only the new keys
         planes = cam_info.frustum_planes.cpu().numpy()
-        self.global_voxel_map.update_active_gaussians(planes, keys_to_init)
-        
-        t4 = time.perf_counter()
+        to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
+        # TODO activate new keys (to_add) to gpu, remove old keys (to_remove)
+        # TODO upon removal from GPU, set the optimized params in voxelmap
+        t3 = time.perf_counter()
 
         # Filter full scan mask, pass along only new 
         # points in voxel space that are not full
@@ -453,20 +449,45 @@ class GaussianModel:
         opacities = opacities[mask]
         normals = normals[mask]
 
-        t5 = time.perf_counter()
+        t4 = time.perf_counter()
 
         self.extend_from_pcd(
             fused_point_cloud, features, scales, rots, opacities, normals, kf_id
         )
 
-        t6 = time.perf_counter()
+        t5 = time.perf_counter()
 
         print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
-            f"fullness={(t2-t1)*1e3:.1f}, "
-            f"insert={(t3-t2)*1e3:.1f}, "
-            f"cull={(t4-t3)*1e3:.1f}, "
-            f"filter={(t5-t4)*1e3:.1f}, "
-            f"extend={(t6-t5)*1e3:.1f}")
+            f"vox check+insert={(t2-t1)*1e3:.1f}, "
+            f"cull={(t3-t2)*1e3:.1f}, "
+            f"filter={(t4-t3)*1e3:.1f}, "
+            f"extend={(t5-t4)*1e3:.1f}, "
+
+    # ------------------------------------------------------------------
+    # GAUSSIAN <--> VOXEL  SWAP  API
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def activate_from_slots(self, slots, kf_id):
+        """
+        UNTESTED AND DON'T KNOW IF WORKS
+        Should use global_voxel_map.active_keys.
+        Should this be a buffer? "GGB"?
+        """
+        # TODO implement logic to activate from global_voxel_map.active_keys
+        # TODO remove unseen gaussians from GPU
+        pass
+        
+    @torch.no_grad()
+    def prune_and_update_slots(self, voxel_map):
+        """
+        UNTESTED AND needs to be implemented
+        • Build a mask that is True for every Gaussian whose voxel key is no
+          longer in `voxel_map.active_keys`.
+        • Prune the tensors & Adam state.
+        • Set slot.cgb_idx = −1 for the pruned ones.
+        """
+        # TODO implement logic to prune and update slots
+        pass
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense

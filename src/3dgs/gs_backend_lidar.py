@@ -17,14 +17,7 @@ from gaussian.utils.camera_utils import Camera
 from gaussian.utils.eval_utils import eval_rendering, eval_rendering_kf
 from gaussian.gui import gui_utils, slam_gui
 
-
-def print_gpu_mem(tag=""):
-    torch.cuda.synchronize()
-    alloc   = torch.cuda.memory_allocated()  / 1024**2   # MB
-    reserv  = torch.cuda.memory_reserved()  / 1024**2
-    peak    = torch.cuda.max_memory_allocated() / 1024**2
-    print(f"[{tag}] GPU   alloc {alloc:7.1f} MB | reserved {reserv:7.1f} MB | peak {peak:7.1f} MB")
-    torch.cuda.reset_peak_memory_stats()
+from gaussian.scene.gaussian_model import print_gpu_mem
 
 
 class GSBackEnd(mp.Process):
@@ -169,7 +162,6 @@ class GSBackEnd(mp.Process):
         )
 
         if self.debug:
-            print(f"Added new keyframe {frame_idx} with {self.gaussians.num_points} points")
             optimizer_state_size = sum(p.numel() * 4 for group in self.gaussians.optimizer.param_groups for p in group["params"])
             print(f"Optimizer state size after extend_from_lidar_seq: {optimizer_state_size / 1024**3:.3f} GB")
 
