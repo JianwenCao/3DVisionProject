@@ -16,20 +16,13 @@ class GlobalVoxelSlot:
     """
     Persistent storage for a single voxel's Gaussian parameters and occupancy.
     """
-    __slots__ = ('cpu_params', 'cuda_tensors', 'count', 'needs_init', 'cgb_idx')
+    __slots__ = ('cpu_params', 'cuda_tensors', 'count', 'needs_init', 'gpu_idx')
 
     def __init__(self):
         self.count = 0
         self.needs_init = True
-        self.cgb_idx = -1
+        self.gpu_idx = -1
 
-        # self._xyz = torch.empty(0, device="cuda")
-        # self._features_dc = torch.empty(0, device="cuda")
-        # self._features_rest = torch.empty(0, device="cuda")
-        # self._scaling = torch.empty(0, device="cuda")
-        # self._rotation = torch.empty(0, device="cuda")
-        # self._opacity = torch.empty(0, device="cuda")
-        # self._normals = torch.empty(0, 3, device="cuda")
         # self.gaussians_per_voxel = None # TODO later, dynamically allocate this based on texture
         self.cpu_params = {k: None for k in GAUSS_FIELDS}
         self.cuda_tensors = {k: torch.empty(0, device="cuda") for k in GAUSS_FIELDS}
@@ -145,18 +138,22 @@ class GlobalVoxelMap:
     def update_active_gaussians(
         self,
         frustum_planes: np.ndarray,
-        new_keys: Optional[List[Tuple[int,int,int]]] = None
-    ) -> None:
+        new_keys: Optional[List[Tuple[int, int, int]]] = None
+    ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
         """
-        Candidate-only culling: first prune existing active_keys,
-        then cull only the new_keys for addition.
+        Update the active voxel set based on frustum visibility.
+        Retain visible active voxels, add new visible voxels, and remove non-visible ones.
 
         frustum_planes: (6,4) array of [a,b,c,d]
         new_keys: list of voxel-keys inserted this frame
+        Returns: (to_add, to_remove) - lists of voxel keys to add/remove from GPU
         """
         vs = self.voxel_size
         he = vs * 0.5
-        print(f"[DEBUG] update_active_gaussians got frustum planes: {frustum_planes}")
+        to_add = []
+        to_remove = []
+
+        # Step 1: Cull existing active voxels
         if self.active_keys:
             active_list = list(self.active_keys)
             arr = np.array(active_list, dtype=np.int32)
@@ -164,37 +161,43 @@ class GlobalVoxelMap:
             mask = self._cull_centers(centers, frustum_planes, he)
             visible_active = {active_list[i] for i, v in enumerate(mask) if v}
             print(f"[DEBUG] {len(visible_active)}/{len(active_list)} active voxels visible")
+            to_remove = list(self.active_keys - visible_active)
         else:
             visible_active = set()
-            
-        to_remove = self.active_keys - visible_active
-        # leave slot.cgb_idx untouched; prune_and_update_slots()
-        # will copy params back and then clear it safely.
+            to_remove = []
 
+        # Step 2: Cull new keys and add visible ones
         if new_keys:
             nk_arr = np.array(new_keys, dtype=np.int32)
             nk_centers = nk_arr.astype(np.float32) * vs + he
             print(f"[DEBUG] Voxel centers range: min={nk_centers.min(axis=0)}, max={nk_centers.max(axis=0)}")
             nk_mask = self._cull_centers(nk_centers, frustum_planes, he)
             visible_new = [new_keys[i] for i, v in enumerate(nk_mask) if v]
+            
+            # First‐frame fallback: if we haven’t yet populated the GPU at all,
+            # send *all* new_keys once so the renderer gets a non‐empty tensor.
+            if not self.active_keys and new_keys and not visible_new:
+                visible_new = new_keys
+
             print(f"[DEBUG] {len(visible_new)}/{len(new_keys)} new voxels visible")
+            
+            # Add only new keys that are visible and not already active
+            for key in visible_new:
+                if len(self.active_keys) >= self.max_active_gaussians:
+                    print(f"[DEBUG] Max active Gaussians ({self.max_active_gaussians}) reached")
+                    break
+                if key not in self.active_keys:
+                    slot = self.map.get(key)
+                    if slot.needs_init and slot.cpu_params["xyz"] is None:
+                        slot.cpu_params = self._initialize_gaussian_for_voxel(key)
+                        slot.needs_init = False
+                    to_add.append(key)
+                    self.active_keys.add(key)
         else:
             visible_new = []
-        to_add = []
-        # Add all new_keys during initialization, or visible_new otherwise
-        keys_to_process = new_keys if new_keys and (len(visible_new) == 0 or len(self.active_keys) == 0) else visible_new
-        for key in keys_to_process:
-            if len(self.active_keys) >= self.max_active_gaussians:
-                break
-            slot = self.map.get(key)
-            if slot.needs_init and slot.cpu_params["xyz"] is None:
-                slot.cpu_params = self._initialize_gaussian_for_voxel(key)
-                slot.needs_init = False
-            if key not in self.active_keys:
-                self.active_keys.add(key)
-                to_add.append(key)
-        print(f"[DEBUG] Added {len(to_add)} keys to active_keys, total active_keys: {len(self.active_keys)}")
-        return to_add, list(to_remove)
+
+        print(f"[DEBUG] Added {len(to_add)} keys, removed {len(to_remove)} keys, total active_keys: {len(self.active_keys)}")
+        return to_add, to_remove
 
     def _cull_centers(
         self,
@@ -207,13 +210,12 @@ class GlobalVoxelMap:
         centers: (N,3), planes: (6,4)
         Returns boolean mask of length N.
         """
-        signs = np.sign(planes[:, :3]) # (6,3)
-        corners = centers[None, :, :] + half_extent * signs[:, None, :] # (6,N,3)
-        # dot with normals + d-term
-        normals = planes[:, :3][:, None, :] # (6,1,3)
-        dists = np.sum(corners * normals, axis=2) # (6,N)
-        dists += planes[:, 3:4] # (6,N)
-        return np.all(dists >= 0, axis=0) # (N,)
+        n   = planes[:, :3]                  # (6,3)
+        d   = planes[:, 3]                   # (6,)
+        dist = centers @ n.T + d             # (N,6)
+        r    = half_extent * np.abs(n).sum(1)         # (6,)
+        outside = dist > r                   # (N,6)
+        return ~outside.any(1)               # (N,)
 
     def _initialize_gaussian_for_voxel(self, key: Tuple[int, int, int]) -> dict:
         """

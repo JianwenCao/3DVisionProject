@@ -49,9 +49,9 @@ def print_gaussian_counts(gaussians, gvm, tag=""):
 
 def assert_indices_consistent(gaussians, gvm):
     bad = [k for k in gvm.active_keys
-           if gvm.map[k].cgb_idx < 0
-           or gvm.map[k].cgb_idx >= gaussians._xyz.shape[0]]
-    assert not bad, f"Found stale cgb_idx in {len(bad)} voxel-slots"
+           if gvm.map[k].gpu_idx < 0
+           or gvm.map[k].gpu_idx >= gaussians._xyz.shape[0]]
+    assert not bad, f"Found stale gpu_idx in {len(bad)} voxel-slots"
 
 class GaussianModel:
     def __init__(self, sh_degree: int, config=None):
@@ -434,9 +434,20 @@ class GaussianModel:
 
         # Frustum-cull
         planes = cam_info.frustum_planes.cpu().numpy()
+
+        # DEBUG Estimate frustum z-range
+        near_normal, near_d = planes[4, :3], planes[4, 3]
+        far_normal, far_d = planes[5, :3], planes[5, 3]
+        near_z = -near_d / (near_normal[2] + 1e-6)
+        far_z = -far_d / (far_normal[2] + 1e-6)
+        print(f"[DEBUG] Frustum z-range: near={near_z:.2f}m, far={far_z:.2f}m")
         
-        # Get keys to add to GPU and keys to remove from GPU/map.active_keys
-        to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
+        # OLD LOGIC Get keys to add to GPU and keys to remove from GPU/map.active_keys
+        # to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
+        
+        # New: keep only those keys whose GPU row is valid
+        to_add, raw_remove = gvm.update_active_gaussians(planes, keys_to_init)
+        to_remove = [k for k in raw_remove if gvm.map[k].gpu_idx >= 0]
         
         t3 = time.perf_counter()
 
@@ -444,17 +455,20 @@ class GaussianModel:
         if to_remove:
             if init:
                 raise ValueError("Should not be removing voxels on first frame")
+            print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
             self.prune_and_update_slots(gvm, to_remove)
             gvm.active_keys.difference_update(to_remove)
         if to_add:
+            print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
             self.activate_from_slots(gvm, to_add, kf_id)
 
         # TODO remove later when working
-        # Asserts gaussians live either in cuda tensor AND active_keys or in CPU map w/ cgb_idx=-1
-        assert all( (slot.cgb_idx == -1) == (key not in gvm.active_keys)
-            for key, slot in gvm.map.items() ), "Inconsistent cgb_idx in slots"
-        print("#gpu", self._xyz.shape[0],
-            "#activeKeys", len(gvm.active_keys))
+        # Asserts gaussians live either in cuda tensor AND active_keys or in CPU map w/ gpu_idx=-1
+        assert all(
+                (slot.gpu_idx == -1) == (key not in gvm.active_keys)
+                for key, slot in gvm.map.items()
+            ), "Inconsistent gpu_idx in slots"
+        print(f"[DEBUG] #gpu={self._xyz.shape[0]}, #activeKeys={len(gvm.active_keys)}")
         
         t4 = time.perf_counter()
 
@@ -528,24 +542,31 @@ class GaussianModel:
         # Set GPU indices in the voxel map slots
         start = self._xyz.shape[0] - len(slots)
         for i, s in enumerate(slots):
-            assert s.cgb_idx == -1, f"Slot {i} already has a cgb_idx"
+            assert s.gpu_idx == -1, f"Slot {i} already has a gpu_idx"
             assert s.needs_init is False, f"Slot {i} needs init before pushing params to GPU"
-            s.cgb_idx = start + i
+            s.gpu_idx = start + i
 
     @torch.no_grad()
     def prune_and_update_slots(self, gvm, keys_to_remove):
         """
         Push optimized params back to voxel map slots, remove from GPU optimizer.
         """
-        # Row indices of voxels to remove from GPU
-        drop_idx = [gvm.map[k].cgb_idx for k in keys_to_remove
-                    if gvm.map[k].cgb_idx >= 0]
+        # OLD LOGIC Row indices of voxels to remove from GPU
+        # drop_idx = [gvm.map[k].gpu_idx for k in keys_to_remove
+        #             if gvm.map[k].gpu_idx >= 0]
+
+        # gather candidate indices
+        raw_idx = [gvm.map[k].gpu_idx for k in keys_to_remove]
+        N = self._xyz.shape[0]
+        drop_idx = [i for i in raw_idx if 0 <= i < N] # clamp to [0..N-1]
+        bad = set(raw_idx) - set(drop_idx)
+        print(f"[DEBUG] Found {len(bad)} stale gpu_idx in {len(raw_idx)} voxel-slots")
         
         keep_mask = torch.ones(self._xyz.shape[0], dtype=torch.bool, device="cuda")
         keep_mask[drop_idx] = False
 
         # Map idx to key for the slots to remove
-        idx2key = {gvm.map[k].cgb_idx: k for k in keys_to_remove}
+        idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove}
 
         # Write to slot cpu_params
         for idx in drop_idx:
@@ -563,7 +584,7 @@ class GaussianModel:
                 "normals": self.normals[idx].cpu().numpy()
             }
             gvm.cuda_params_to_voxel(key, params)
-            gvm.map[key].cgb_idx = -1
+            gvm.map[key].gpu_idx = -1
         
         self.prune_points(~keep_mask)
 

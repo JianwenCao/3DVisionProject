@@ -114,20 +114,37 @@ class Camera(nn.Module):
         )
     
     @property
-    def frustum_planes(self):
+    def frustum_planes(self) -> torch.Tensor:
         """
-        Returns a (6,4) torch.Tensor of [a,b,c,d] plane coeffs for Camera object.
+        (6, 4) world-space frustum planes [a,b,c,d] in GS coords
+        (x-right, y-down, z-forward).  Inside: a·x + b·y + c·z + d ≤ 0.
         """
-        VP = self.full_proj_transform.to(self.device)  # (4,4)
-        m = VP
-        planes = torch.zeros((6, 4), device=self.device, dtype=m.dtype)
-        planes[0] = m[3] + m[0]
-        planes[1] = m[3] - m[0]
-        planes[2] = m[3] + m[1]
-        planes[3] = m[3] - m[1]
-        planes[4] = m[3] + m[2]
-        planes[5] = m[3] - m[2]
-        planes = planes / planes[:, :3].norm(dim=1, keepdim=True)
+        # Build (4,4) clip matrix
+        clip = (self.projection_matrix @ self.world_view_transform).to(self.device)
+
+        # transpose so we can treat the GL columns as our slicing axis
+        m = clip.T  # now m[i] is the i’th CLIP *column*
+
+        # extract the 6 planes: (col3 ± col0), (col3 ± col1), (col3 ± col2)
+        planes = torch.empty((6,4), dtype=m.dtype, device=self.device)
+        planes[0] = m[3] + m[0]   # left
+        planes[1] = m[3] - m[0]   # right
+        planes[2] = m[3] + m[1]   # bottom
+        planes[3] = m[3] - m[1]   # top
+        planes[4] = m[3] + m[2]   # near
+        planes[5] = m[3] - m[2]   # far
+
+        # normalize normals to unit length
+        planes /= planes[:, :3].norm(dim=1, keepdim=True)
+
+        # convert to GS axes (x→, y↓, z→)
+        planes[:, :3] *= torch.tensor([1.0, -1.0, -1.0], device=self.device)
+
+        # ensure near plane normal points toward camera (nz < 0)
+        # and far plane normal points away  (nz > 0)
+        if planes[4, 2] > 0: planes[4] *= -1
+        if planes[5, 2] < 0: planes[5] *= -1
+
         return planes
 
     @property
