@@ -21,30 +21,38 @@ class GlobalVoxelSlot:
       needs_init: bool           # whether to init Gaussian for this voxel
       cgb_idx: int               # index in CPU Gaussian Buffer, -1 if inactive
     """
-    __slots__ = ('params', 'count', 'needs_init', 'cgb_idx')
+    __slots__ = ('cpu_params', 'cuda_tensors', 'count', 'needs_init', 'cgb_idx')
 
-    def __init__(self, init_params: Optional[dict] = None):
-        self.params = init_params
+    def __init__(self):
         self.count = 0
         self.needs_init = True
         self.cgb_idx = -1
 
-        self._xyz = torch.empty(0, device="cuda")
-        self._features_dc = torch.empty(0, device="cuda")
-        self._features_rest = torch.empty(0, device="cuda")
-        self._scaling = torch.empty(0, device="cuda")
-        self._rotation = torch.empty(0, device="cuda")
-        self._opacity = torch.empty(0, device="cuda")
-        self._normals = torch.empty(0, 3, device="cuda")
+        # self._xyz = torch.empty(0, device="cuda")
+        # self._features_dc = torch.empty(0, device="cuda")
+        # self._features_rest = torch.empty(0, device="cuda")
+        # self._scaling = torch.empty(0, device="cuda")
+        # self._rotation = torch.empty(0, device="cuda")
+        # self._opacity = torch.empty(0, device="cuda")
+        # self._normals = torch.empty(0, 3, device="cuda")
         # self.gaussians_per_voxel = None # TODO later, dynamically allocate this based on texture
+        self.cpu_params = {k: None for k in GAUSS_FIELDS}
+        self.cuda_tensors = {k: torch.empty(0, device="cuda") for k in GAUSS_FIELDS}
 
     def to_cuda_tuple(self):
         """
         Convert the stored voxel parameters to a tuple of CUDA tensors.
         For GPU processing.
         """
-        # TODO: Implement the conversion logic
-        pass
+        out = []
+        for k in GAUSS_FIELDS:
+            if self.cpu_params[k] is None:
+                raise RuntimeError(f"GlobalVoxelSlot missing field {k} in cpu_params.")
+            t = torch.as_tensor(self.cpu_params[k], dtype=torch.float32, device="cuda")
+            t.requires_grad_(k != "normals") # normals not optimized, used for supervision
+            self.cuda_tensors[k] = t
+            out.append(t)
+        return tuple(out)
 
 class GlobalVoxelMap:
     """
@@ -65,14 +73,25 @@ class GlobalVoxelMap:
         # currently visible (active) voxel keys, THESE SHOULD GO TO GPU
         self.active_keys: Set[Tuple[int, int, int]] = set()
 
-    def cuda_params_to_voxel(self, key: Tuple[int,int,int]) -> dict:
+    def cuda_params_to_voxel(self, key: Tuple[int,int,int], updated: dict) -> None:
         """
         Incoming, optimized Gaussian parameters from GPU to map.
+        TODO define updated arg
         """
         slot = self.map.get(key)
         if slot is None:
             raise ValueError("GPU trying to place optimized parameters in voxel slot that does not exist.")
-        # TODO finish this logic, somehow get the GPU params and store in the slot
+        # detach, move to CPU, convert to numpy
+        try:
+            for k, v in updated.items():
+                if k not in GAUSS_FIELDS:
+                    raise ValueError(f"Invalid field {k} in updated Gaussian parameters.")
+                if v is None:
+                    raise ValueError(f"Field {k} in updated Gaussian parameters is None.")
+                slot.cpu_params[k] = v.detach().cpu().numpy()
+        except (ValueError, AttributeError) as e:
+            raise RuntimeError(f"Error updating voxel parameters: {e}")
+
 
     def insert_gaussians(self, fused_point_cloud, features, scales, rots, opacities, normals):
         """
@@ -82,6 +101,7 @@ class GlobalVoxelMap:
         """
         # Find voxels that are not full (mask_np)
         pts_np = fused_point_cloud.cpu().numpy() # (M,3)
+
         # Compute incoming voxel spatial keys
         keys = np.floor(pts_np / self.voxel_size).astype(np.int32) # (M,3)
         default_slot = GlobalVoxelSlot()
@@ -95,20 +115,32 @@ class GlobalVoxelMap:
         mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device)
         
         keys_to_init: List[Tuple[int,int,int]] = []
-        # TODO replace this with something that fills the voxel slots with gaussian data, marks needs_init=False
-        # for p in points:
-        #     key = voxel_key_from_xyz(p, self.voxel_size)
-        #     slot = self.map.get(key)
-        #     if slot is None:
-        #         slot = GlobalVoxelSlot()
-        #         self.map[key] = slot
+        # TODO vectorize this or do in batch
+        for i, keep in enumerate(mask_np):
+            if not keep:
+                continue
+            key = tuple(keys[i])
+            slot = self.map.get(key)
+            if slot is None:
+                slot = GlobalVoxelSlot()
+                self.map[key] = slot
+            
+            if slot.count >= self.max_points_per_voxel:
+                print(f"[WARN] insert_gaussians: voxel {key} already full (count={slot.count}). Redundant insert ignored.")
+                continue
+            
+            # TODO Maybe don't detach if initializing first frames
+            slot.cpu_params["xyz"] = fused_point_cloud[i].detach().cpu().numpy()
+            slot.cpu_params["f_dc"] = features[i, :, 0].detach().cpu().numpy()
+            slot.cpu_params["f_rest"] = features[i, :, 1:].detach().cpu().numpy()
+            slot.cpu_params["scaling"] = scales[i].detach().cpu().numpy()
+            slot.cpu_params["rotation"] = rots[i].detach().cpu().numpy()
+            slot.cpu_params["opacity"] = opacities[i].detach().cpu().numpy()
+            slot.cpu_params["normals"] = normals[i].detach().cpu().numpy()
 
-        #     if slot.count < self.max_points_per_voxel:
-        #         slot.count += 1
-        #         slot.needs_init = True
-        #         keys_to_init.append(key)
-        #     else:
-        #         print(f"[WARN] insert_points: voxel {key} already full (count={slot.count}). Redundant insert ignored.")
+            slot.count += 1
+            slot.needs_init = False
+            keys_to_init.append(key)
         return mask, keys_to_init
 
     def update_active_gaussians(
@@ -137,7 +169,7 @@ class GlobalVoxelMap:
             visible_active = set()
         to_remove = self.active_keys - visible_active
         for key in to_remove:
-            slot = self.map[key]
+            slot = self.map.get(key)
             if slot.cgb_idx >= 0:
                 slot.cgb_idx = -1
             self.active_keys.remove(key)
@@ -156,9 +188,9 @@ class GlobalVoxelMap:
         for key in keys_to_process:
             if len(self.active_keys) >= self.max_active_gaussians:
                 break
-            slot = self.map[key]
-            if slot.needs_init and slot.params is None:
-                slot.params = self._initialize_gaussian_for_voxel(key)
+            slot = self.map.get(key)
+            if slot.needs_init and slot.cpu_params["xyz"] is None:
+                slot.cpu_params = self._initialize_gaussian_for_voxel(key)
                 slot.needs_init = False
             if key not in self.active_keys:  # Avoid duplicates
                 self.active_keys.add(key)

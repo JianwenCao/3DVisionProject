@@ -10,14 +10,12 @@ from lietorch import SE3, SO3
 from util.utils import Log, clone_obj
 from gaussian.renderer import render
 from gaussian.utils.loss_utils import l1_loss, ssim
-from gaussian.scene.gaussian_model import GaussianModel
+from gaussian.scene.gaussian_model import GaussianModel, print_gpu_mem
 from gaussian.utils.graphics_utils import getProjectionMatrix2
 from gaussian.utils.slam_utils import update_pose, to_se3_vec, get_loss_mapping_rgb, get_loss_lidar_normal, quaternion_to_normal
 from gaussian.utils.camera_utils import Camera
 from gaussian.utils.eval_utils import eval_rendering, eval_rendering_kf
 from gaussian.gui import gui_utils, slam_gui
-
-from gaussian.scene.gaussian_model import print_gpu_mem
 
 
 class GSBackEnd(mp.Process):

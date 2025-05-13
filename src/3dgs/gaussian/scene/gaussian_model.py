@@ -429,8 +429,7 @@ class GaussianModel:
 
         gvm = self.global_voxel_map
         # Insert map points in only under-filled voxels
-        mask_np, keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
-        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device) # TODO check device
+        mask, keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
         t2 = time.perf_counter()
 
         # Frustum-cull & update sliding-window with only the new keys
@@ -440,54 +439,124 @@ class GaussianModel:
         # TODO upon removal from GPU, set the optimized params in voxelmap
         t3 = time.perf_counter()
 
-        # Filter full scan mask, pass along only new 
-        # points in voxel space that are not full
-        fused_point_cloud = fused_point_cloud[mask]
-        features = features[mask]
-        scales = scales[mask]
-        rots = rots[mask]
-        opacities = opacities[mask]
-        normals = normals[mask]
+        # GPU <-> CPU swap
+        if to_remove:
+            if init:
+                raise ValueError("Should not be removing voxels on first frame")
+            self.prune_and_update_slots(gvm)
+        if to_add:
+            self.activate_from_slots(gvm, to_add, kf_id)
 
         t4 = time.perf_counter()
 
-        self.extend_from_pcd(
-            fused_point_cloud, features, scales, rots, opacities, normals, kf_id
-        )
+        # Filter full scan mask, pass along only new 
+        # points in voxel space that are not full
+        # fused_point_cloud = fused_point_cloud[mask]
+        # features = features[mask]
+        # scales = scales[mask]
+        # rots = rots[mask]
+        # opacities = opacities[mask]
+        # normals = normals[mask]
 
         t5 = time.perf_counter()
+
+        # self.extend_from_pcd(
+        #     fused_point_cloud, features, scales, rots, opacities, normals, kf_id
+        # )
+
+        t6 = time.perf_counter()
 
         print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
             f"vox check+insert={(t2-t1)*1e3:.1f}, "
             f"cull={(t3-t2)*1e3:.1f}, "
-            f"filter={(t4-t3)*1e3:.1f}, "
-            f"extend={(t5-t4)*1e3:.1f}, "
+            f"swap+prune={(t4-t3)*1e3:.1f}, "
+            f"filter={(t5-t4)*1e3:.1f}, "
+            f"extend={(t6-t5)*1e3:.1f}")
 
     # ------------------------------------------------------------------
     # GAUSSIAN <--> VOXEL  SWAP  API
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def activate_from_slots(self, slots, kf_id):
+    def activate_from_slots(self, gvm, keys, kf_id):
         """
-        UNTESTED AND DON'T KNOW IF WORKS
-        Should use global_voxel_map.active_keys.
-        Should this be a buffer? "GGB"?
+        Bring the specified voxel keys onto GPU 
+        and append to optimization tensors.
         """
-        # TODO implement logic to activate from global_voxel_map.active_keys
-        # TODO remove unseen gaussians from GPU
-        pass
+        slots = [gvm.map[k] for k in keys]
+        if not slots:
+            print("No new voxels to activate on GPU")
+            return
         
+        def cat(field, requires_grad=True):
+            ts = [torch.as_tensor(s.cpu_params[field], dtype=torch.float32, device="cuda") for s in slots]
+            t = torch.stack(ts, dim=0)
+            t.requires_grad_(requires_grad)
+            return t
+        
+        new_xyz = nn.Parameter(cat("xyz"))
+        new_f_dc = nn.Parameter(cat("f_dc").unsqueeze(1)) # (N,1,3)
+        new_f_rest = nn.Parameter(cat("f_rest").transpose(1, 2).contiguous()) # (N,SH-1,3)
+        new_opacity = nn.Parameter(cat("opacity"))
+        new_scaling = nn.Parameter(cat("scaling"))
+        new_rot = nn.Parameter(cat("rotation"))
+        new_normals = torch.stack([torch.as_tensor(s.cpu_params["normals"], 
+                                                   dtype=torch.float32, device="cuda") 
+                                                   for s in slots], dim=0)
+        
+        # Push onto optimizer
+        self.densification_postfix(
+            new_xyz,
+            new_f_dc,
+            new_f_rest,
+            new_opacity,
+            new_scaling,
+            new_rot,
+            new_normals,
+            new_kf_ids=torch.full((len(slots),), kf_id, dtype=torch.int32),
+            new_n_obs=torch.zeros((len(slots),), dtype=torch.int32),
+        )
+
+        # Set GPU indices in the voxel map slots
+        start = self._xyz.shape[0] - len(slots)
+        for i, s in enumerate(slots):
+            assert s.cgb_idx == -1, f"Slot {i} already has a cgb_idx"
+            assert s.needs_init is False, f"Slot {i} needs init before pushing params to GPU"
+            s.cgb_idx = start + i
+
     @torch.no_grad()
-    def prune_and_update_slots(self, voxel_map):
+    def prune_and_update_slots(self, gvm):
         """
-        UNTESTED AND needs to be implemented
-        • Build a mask that is True for every Gaussian whose voxel key is no
-          longer in `voxel_map.active_keys`.
-        • Prune the tensors & Adam state.
-        • Set slot.cgb_idx = −1 for the pruned ones.
+        Push optimized params back to voxel map slots, remove from GPU optimizer.
         """
-        # TODO implement logic to prune and update slots
-        pass
+        # Map 
+        idx2key = {gvm.map[k].cgb_idx: k for k in gvm.active_keys
+                   if gvm.map[k].cgb_idx >= 0}
+        
+        keep_mask = torch.zeros(self._xyz.shape[0], dtype=torch.bool, device="cuda")
+        for idx in idx2key:
+            keep_mask[idx] = True
+
+        drop_idx = (~keep_mask).nonzero(as_tuple=False).squeeze(1).tolist()
+
+        # Write to slot cpu_params
+        for idx in drop_idx:
+            if idx not in idx2key:
+                print(f"Warning: idx {idx} belongs to a non-active voxel. Should not happen.")
+                continue
+            key = idx2key[idx]
+            params = {
+                "xyz": self._xyz[idx].cpu().numpy(),
+                "f_dc": self._features_dc[idx, :, 0].cpu().numpy(),
+                "f_rest": self._features_rest[idx].cpu().numpy(),
+                "opacity": self._opacity[idx].cpu().numpy(),
+                "scaling": self._scaling[idx].cpu().numpy(),
+                "rotation": self._rotation[idx].cpu().numpy(),
+                "normals": self.normals[idx].cpu().numpy()
+            }
+            gvm.cuda_params_to_voxel(key, params)
+            gvm.map[key].cgb_idx = -1
+        
+        self.prune_points(~keep_mask)
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
