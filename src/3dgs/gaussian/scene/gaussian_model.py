@@ -416,6 +416,7 @@ class GaussianModel:
     def extend_from_lidar_seq(
             self, cam_info, kf_id=-1, init=False, pcd=None
     ):
+        print("\n[DEBUG] New frame, called extend_from_lidar_seq")
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
 
@@ -440,7 +441,7 @@ class GaussianModel:
         far_normal, far_d = planes[5, :3], planes[5, 3]
         near_z = -near_d / (near_normal[2] + 1e-6)
         far_z = -far_d / (far_normal[2] + 1e-6)
-        print(f"[DEBUG] Frustum z-range: near={near_z:.2f}m, far={far_z:.2f}m")
+        # print(f"[DEBUG] Frustum z-range: near={near_z:.2f}m, far={far_z:.2f}m")
         
         # OLD LOGIC Get keys to add to GPU and keys to remove from GPU/map.active_keys
         # to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
@@ -457,7 +458,6 @@ class GaussianModel:
                 raise ValueError("Should not be removing voxels on first frame")
             print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
             self.prune_and_update_slots(gvm, to_remove)
-            gvm.active_keys.difference_update(to_remove)
         if to_add:
             print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
             self.activate_from_slots(gvm, to_add, kf_id)
@@ -549,31 +549,36 @@ class GaussianModel:
     @torch.no_grad()
     def prune_and_update_slots(self, gvm, keys_to_remove):
         """
-        Push optimized params back to voxel map slots, remove from GPU optimizer.
-        """
-        # OLD LOGIC Row indices of voxels to remove from GPU
-        # drop_idx = [gvm.map[k].gpu_idx for k in keys_to_remove
-        #             if gvm.map[k].gpu_idx >= 0]
+        Copy optimized params from GPU rows back into CPU slots.
+        Remove those rows from self._xyz, self._features_*, etc.
+        Update each slot's gpu_idx to reflect its new row in the compacted buffers.
 
-        # gather candidate indices
+        After calling, gvm.active_keys contains correct slot.gpu_idx
+        on smaller CUDA tensors.
+        """
+        N = self._xyz.shape[0] # Total rows currently on GPU
+
+        # Gather candidate drop indices, clamp to valid range
         raw_idx = [gvm.map[k].gpu_idx for k in keys_to_remove]
-        N = self._xyz.shape[0]
-        drop_idx = [i for i in raw_idx if 0 <= i < N] # clamp to [0..N-1]
-        bad = set(raw_idx) - set(drop_idx)
-        print(f"[DEBUG] Found {len(bad)} stale gpu_idx in {len(raw_idx)} voxel-slots")
+        drop_idx = [i for i in raw_idx if 0 <= i < N]
+        stale = set(raw_idx) - set(drop_idx)
+        if stale:
+            print(f"[DEBUG] Found {len(stale)} stale gpu_idx in {len(raw_idx)} slots")
         
-        keep_mask = torch.ones(self._xyz.shape[0], dtype=torch.bool, device="cuda")
+        keep_mask = torch.ones(N, dtype=torch.bool, device=self._xyz.device)
         keep_mask[drop_idx] = False
 
-        # Map idx to key for the slots to remove
-        idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove}
+        # Map each dropped row → its voxel key
+        idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove
+                   if 0 <= gvm.map[k].gpu_idx < N}
 
         # Write to slot cpu_params
         for idx in drop_idx:
-            if idx not in idx2key:
-                print(f"Warning: idx {idx} belongs to a non-active voxel. Should not happen.")
+            key = idx2key.get(idx, None)
+            if key is None:
+                print(f"[DEBUG] Found stale gpu_idx {idx} even after clamping, should not happen.")
                 continue
-            key = idx2key[idx]
+            
             params = {
                 "xyz": self._xyz[idx].cpu().numpy(),
                 "f_dc": self._features_dc[idx, :, 0].cpu().numpy(),
@@ -583,10 +588,35 @@ class GaussianModel:
                 "rotation": self._rotation[idx].cpu().numpy(),
                 "normals": self.normals[idx].cpu().numpy()
             }
+            # Write params to CPU and mark "not on GPU"
             gvm.cuda_params_to_voxel(key, params)
             gvm.map[key].gpu_idx = -1
         
-        self.prune_points(~keep_mask)
+        # Compact the GPU buffers by dropping the False rows
+        # prune_points takes a boolean mask of rows to *keep* = keep_mask
+        self.prune_points(keep_mask)
+
+        # Re‐assign gpu_idx **only** for the survivors
+        survivors = set(gvm.active_keys) - set(keys_to_remove)
+
+        # Compute new row positions for all survivors
+        # List of old-indices we kept, in increasing order
+        keep_idx = [i for i, keep in enumerate(keep_mask.tolist()) if keep]
+        # Map old_idx → new_idx
+        remap = {old: new for new, old in enumerate(keep_idx)}
+
+        for key in survivors:
+            slot = gvm.map[key]
+            old = slot.gpu_idx
+            new = remap.get(old, -1)
+            slot.gpu_idx = new
+            bad_count = 0
+            if new < 0:
+                bad_count += 1 
+        print(f"[WARNING] Found {bad_count} stale gpu_idx in {len(gvm.active_keys)} slots")
+
+        gvm.active_keys.difference_update(keys_to_remove)
+
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense

@@ -158,6 +158,12 @@ class GlobalVoxelMap:
             active_list = list(self.active_keys)
             arr = np.array(active_list, dtype=np.int32)
             centers = arr.astype(np.float32) * vs + he
+
+            # DEBUG
+            n, d = frustum_planes[:, :3], frustum_planes[:,3]
+            dist_example = centers[0] @ n.T + d  # shape (6,)
+            print("plane distances for one old voxel:", dist_example)
+
             mask = self._cull_centers(centers, frustum_planes, he)
             visible_active = {active_list[i] for i, v in enumerate(mask) if v}
             print(f"[DEBUG] {len(visible_active)}/{len(active_list)} active voxels visible")
@@ -170,7 +176,13 @@ class GlobalVoxelMap:
         if new_keys:
             nk_arr = np.array(new_keys, dtype=np.int32)
             nk_centers = nk_arr.astype(np.float32) * vs + he
-            print(f"[DEBUG] Voxel centers range: min={nk_centers.min(axis=0)}, max={nk_centers.max(axis=0)}")
+
+            # DEBUG
+            n, d = frustum_planes[:, :3], frustum_planes[:,3]
+            dist_new = nk_centers[0] @ n.T + d
+            print("plane distances for one new voxel:", dist_new)
+
+            # print(f"[DEBUG] Voxel centers range: min={nk_centers.min(axis=0)}, max={nk_centers.max(axis=0)}")
             nk_mask = self._cull_centers(nk_centers, frustum_planes, he)
             visible_new = [new_keys[i] for i, v in enumerate(nk_mask) if v]
             
@@ -201,21 +213,28 @@ class GlobalVoxelMap:
 
     def _cull_centers(
         self,
-        centers: np.ndarray,
-        planes: np.ndarray,
+        centers: np.ndarray,   # (N,3)
+        planes: np.ndarray,    # (6,4) – [nx,ny,nz,d], plane eq: n⋅p + d ≤ 0 → inside
         half_extent: float
     ) -> np.ndarray:
         """
-        Vectorized AABB-frustum test for an array of centers.
-        centers: (N,3), planes: (6,4)
-        Returns boolean mask of length N.
+        Vectorized AABB↔frustum test: keep a voxel iff *all* of its 8 corners
+        lie on the *inside* side of *every* plane.
+        We do this by selecting, for each plane, the AABB corner that is
+        farthest along that plane’s normal; if *that* corner is still inside
+        (n·corner + d ≤ 0), the entire box intersects the frustum.
         """
-        n   = planes[:, :3]                  # (6,3)
-        d   = planes[:, 3]                   # (6,)
-        dist = centers @ n.T + d             # (N,6)
-        r    = half_extent * np.abs(n).sum(1)         # (6,)
-        outside = dist > r                   # (N,6)
-        return ~outside.any(1)               # (N,)
+        # 1) For each plane, pick the “farthest” corner
+        signs   = np.sign(planes[:, :3])                   # (6,3)
+        corners = centers[None,:,:] + half_extent*signs[:,None,:]  # (6,N,3)
+
+        # 2) Compute signed distance of those corners to each plane
+        normals = planes[:,:3][:,None,:]                   # (6,1,3)
+        dists   = np.sum(corners * normals, axis=2)        # (6,N)
+        dists  += planes[:,3:4]                            # (6,N)
+
+        # 3) A box is “inside” iff *all* its farthest‐corners satisfy n·p + d ≤ 0
+        return np.all(dists <= 0, axis=0)                  # (N,)  True = keep
 
     def _initialize_gaussian_for_voxel(self, key: Tuple[int, int, int]) -> dict:
         """
