@@ -140,75 +140,48 @@ class GlobalVoxelMap:
         frustum_planes: np.ndarray,
         new_keys: Optional[List[Tuple[int, int, int]]] = None
     ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
-        """
-        Update the active voxel set based on frustum visibility.
-        Retain visible active voxels, add new visible voxels, and remove non-visible ones.
+        vs, he = self.voxel_size, self.voxel_size * 0.5
 
-        frustum_planes: (6,4) array of [a,b,c,d]
-        new_keys: list of voxel-keys inserted this frame
-        Returns: (to_add, to_remove) - lists of voxel keys to add/remove from GPU
-        """
-        vs = self.voxel_size
-        he = vs * 0.5
-        to_add = []
-        to_remove = []
+        old_active = set(self.active_keys)
 
-        # Step 1: Cull existing active voxels
-        if self.active_keys:
-            active_list = list(self.active_keys)
-            arr = np.array(active_list, dtype=np.int32)
-            centers = arr.astype(np.float32) * vs + he
+        # Compute world‐space centers
+        def centers_of(keys):
+            arr = np.array(list(keys), dtype=np.int32)
+            return arr.astype(np.float32) * vs + he
 
-            # DEBUG
-            n, d = frustum_planes[:, :3], frustum_planes[:,3]
-            dist_example = centers[0] @ n.T + d  # shape (6,)
-            print("plane distances for one old voxel:", dist_example)
-
-            mask = self._cull_centers(centers, frustum_planes, he)
-            visible_active = {active_list[i] for i, v in enumerate(mask) if v}
-            print(f"[DEBUG] {len(visible_active)}/{len(active_list)} active voxels visible")
-            to_remove = list(self.active_keys - visible_active)
+        # 1) Cull existing actives, if any
+        if old_active:
+            old_centers    = centers_of(old_active)
+            mask_old       = self._cull_centers(old_centers, frustum_planes, he)
+            visible_active = {
+                k for k, v in zip(old_active, mask_old) if v
+            }
         else:
             visible_active = set()
-            to_remove = []
 
-        # Step 2: Cull new keys and add visible ones
+        # 2) Which of the new insertions actually fall in view?
         if new_keys:
-            nk_arr = np.array(new_keys, dtype=np.int32)
-            nk_centers = nk_arr.astype(np.float32) * vs + he
-
-            # DEBUG
-            n, d = frustum_planes[:, :3], frustum_planes[:,3]
-            dist_new = nk_centers[0] @ n.T + d
-            print("plane distances for one new voxel:", dist_new)
-
-            # print(f"[DEBUG] Voxel centers range: min={nk_centers.min(axis=0)}, max={nk_centers.max(axis=0)}")
-            nk_mask = self._cull_centers(nk_centers, frustum_planes, he)
-            visible_new = [new_keys[i] for i, v in enumerate(nk_mask) if v]
-            
-            # First‐frame fallback: if we haven’t yet populated the GPU at all,
-            # send *all* new_keys once so the renderer gets a non‐empty tensor.
-            if not self.active_keys and new_keys and not visible_new:
-                visible_new = new_keys
-
-            print(f"[DEBUG] {len(visible_new)}/{len(new_keys)} new voxels visible")
-            
-            # Add only new keys that are visible and not already active
-            for key in visible_new:
-                if len(self.active_keys) >= self.max_active_gaussians:
-                    print(f"[DEBUG] Max active Gaussians ({self.max_active_gaussians}) reached")
-                    break
-                if key not in self.active_keys:
-                    slot = self.map.get(key)
-                    if slot.needs_init and slot.cpu_params["xyz"] is None:
-                        slot.cpu_params = self._initialize_gaussian_for_voxel(key)
-                        slot.needs_init = False
-                    to_add.append(key)
-                    self.active_keys.add(key)
+            new_set = set(new_keys)
+            new_centers = centers_of(new_set)
+            mask_new    = self._cull_centers(new_centers, frustum_planes, he)
+            visible_new = {
+                k for k, v in zip(new_set, mask_new) if v
+            }
         else:
-            visible_new = []
+            visible_new = set()
 
-        print(f"[DEBUG] Added {len(to_add)} keys, removed {len(to_remove)} keys, total active_keys: {len(self.active_keys)}")
+        # 3) First‐frame fallback: if we're totally empty, just seed with all new
+        if not old_active and new_keys and not visible_new:
+            visible_new = set(new_keys)
+
+        # 4) Compute diffs
+        to_remove = list(old_active - visible_active)
+        to_add    = list(visible_new - old_active)
+
+        print(f"[DEBUG] Visible old: {len(visible_active)}/{len(old_active)}, "
+            f"visible new: {len(visible_new)}/{len(new_keys or [])}")
+        print(f"[DEBUG] Will add {len(to_add)}, remove {len(to_remove)}")
+
         return to_add, to_remove
 
     def _cull_centers(

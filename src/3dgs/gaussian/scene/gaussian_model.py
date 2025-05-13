@@ -444,11 +444,11 @@ class GaussianModel:
         # print(f"[DEBUG] Frustum z-range: near={near_z:.2f}m, far={far_z:.2f}m")
         
         # OLD LOGIC Get keys to add to GPU and keys to remove from GPU/map.active_keys
-        # to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
+        to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
         
-        # New: keep only those keys whose GPU row is valid
-        to_add, raw_remove = gvm.update_active_gaussians(planes, keys_to_init)
-        to_remove = [k for k in raw_remove if gvm.map[k].gpu_idx >= 0]
+        # # New: keep only those keys whose GPU row is valid
+        # to_add, raw_remove = gvm.update_active_gaussians(planes, keys_to_init)
+        # to_remove = [k for k in raw_remove if gvm.map[k].gpu_idx >= 0]
         
         t3 = time.perf_counter()
 
@@ -458,9 +458,11 @@ class GaussianModel:
                 raise ValueError("Should not be removing voxels on first frame")
             print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
             self.prune_and_update_slots(gvm, to_remove)
+            gvm.active_keys.difference_update(to_remove)
         if to_add:
             print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
             self.activate_from_slots(gvm, to_add, kf_id)
+            gvm.active_keys.update(to_add)
 
         # TODO remove later when working
         # Asserts gaussians live either in cuda tensor AND active_keys or in CPU map w/ gpu_idx=-1
@@ -593,8 +595,8 @@ class GaussianModel:
             gvm.map[key].gpu_idx = -1
         
         # Compact the GPU buffers by dropping the False rows
-        # prune_points takes a boolean mask of rows to *keep* = keep_mask
-        self.prune_points(keep_mask)
+        # prune_points takes a boolean mask of rows to DROP, invert keep_mask
+        self.prune_points(~keep_mask)
 
         # Re‐assign gpu_idx **only** for the survivors
         survivors = set(gvm.active_keys) - set(keys_to_remove)
@@ -605,15 +607,15 @@ class GaussianModel:
         # Map old_idx → new_idx
         remap = {old: new for new, old in enumerate(keep_idx)}
 
+        stale_count = 0
         for key in survivors:
             slot = gvm.map[key]
             old = slot.gpu_idx
             new = remap.get(old, -1)
             slot.gpu_idx = new
-            bad_count = 0
             if new < 0:
-                bad_count += 1 
-        print(f"[WARNING] Found {bad_count} stale gpu_idx in {len(gvm.active_keys)} slots")
+                stale_count += 1 
+        print(f"[WARNING] Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots")
 
         gvm.active_keys.difference_update(keys_to_remove)
 
