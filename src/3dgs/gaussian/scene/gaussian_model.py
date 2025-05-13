@@ -335,7 +335,7 @@ class GaussianModel:
         mask_pos = trace > 0.0
         if mask_pos.any():
             s = torch.sqrt(trace[mask_pos] + 1.0) * 2.0
-            quat[mask_pos, 3] = 0.25 * s              # w
+            quat[mask_pos, 3] = 0.25 * s  # w
             quat[mask_pos, 0] = (R[mask_pos, 2, 1] - R[mask_pos, 1, 2]) / s  # x
             quat[mask_pos, 1] = (R[mask_pos, 0, 2] - R[mask_pos, 2, 0]) / s  # y
             quat[mask_pos, 2] = (R[mask_pos, 1, 0] - R[mask_pos, 0, 1]) / s  # z
@@ -344,7 +344,7 @@ class GaussianModel:
         mask_0 = (R[:, 0, 0] >= R[:, 1, 1]) & (R[:, 0, 0] >= R[:, 2, 2]) & (~mask_pos)
         if mask_0.any():
             s = torch.sqrt(1.0 + R[mask_0, 0, 0] - R[mask_0, 1, 1] - R[mask_0, 2, 2]) * 2.0
-            quat[mask_0, 0] = 0.25 * s               # x
+            quat[mask_0, 0] = 0.25 * s  # x
             quat[mask_0, 3] = (R[mask_0, 2, 1] - R[mask_0, 1, 2]) / s
             quat[mask_0, 1] = (R[mask_0, 0, 1] + R[mask_0, 1, 0]) / s
             quat[mask_0, 2] = (R[mask_0, 0, 2] + R[mask_0, 2, 0]) / s
@@ -353,7 +353,7 @@ class GaussianModel:
         mask_1 = (R[:, 1, 1] >= R[:, 0, 0]) & (R[:, 1, 1] >= R[:, 2, 2]) & (~mask_pos) & (~mask_0)
         if mask_1.any():
             s = torch.sqrt(1.0 + R[mask_1, 1, 1] - R[mask_1, 0, 0] - R[mask_1, 2, 2]) * 2.0
-            quat[mask_1, 1] = 0.25 * s               # y
+            quat[mask_1, 1] = 0.25 * s  # y
             quat[mask_1, 3] = (R[mask_1, 0, 2] - R[mask_1, 2, 0]) / s
             quat[mask_1, 0] = (R[mask_1, 0, 1] + R[mask_1, 1, 0]) / s
             quat[mask_1, 2] = (R[mask_1, 1, 2] + R[mask_1, 2, 1]) / s
@@ -362,7 +362,7 @@ class GaussianModel:
         mask_2 = ~(mask_pos | mask_0 | mask_1)
         if mask_2.any():
             s = torch.sqrt(1.0 + R[mask_2, 2, 2] - R[mask_2, 0, 0] - R[mask_2, 1, 1]) * 2.0
-            quat[mask_2, 2] = 0.25 * s               # z
+            quat[mask_2, 2] = 0.25 * s  # z
             quat[mask_2, 3] = (R[mask_2, 1, 0] - R[mask_2, 0, 1]) / s
             quat[mask_2, 0] = (R[mask_2, 0, 2] + R[mask_2, 2, 0]) / s
             quat[mask_2, 1] = (R[mask_2, 1, 2] + R[mask_2, 2, 1]) / s
@@ -387,7 +387,7 @@ class GaussianModel:
         new_scaling = nn.Parameter(scales.requires_grad_(True))
         new_rotation = nn.Parameter(rots.requires_grad_(True))
         new_opacity = nn.Parameter(opacities.requires_grad_(True))
-        new_normals = normals.detach()        # TODO check plain Tensor, no Autograd
+        new_normals = normals.detach() # TODO check plain Tensor, no Autograd
 
         new_unique_kfIDs = torch.ones((new_xyz.shape[0])).int() * kf_id
         new_n_obs = torch.zeros((new_xyz.shape[0])).int()
@@ -432,21 +432,30 @@ class GaussianModel:
         mask, keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
         t2 = time.perf_counter()
 
-        # Frustum-cull & update sliding-window with only the new keys
+        # Frustum-cull
         planes = cam_info.frustum_planes.cpu().numpy()
+        
+        # Get keys to add to GPU and keys to remove from GPU/map.active_keys
         to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
-        # TODO activate new keys (to_add) to gpu, remove old keys (to_remove)
-        # TODO upon removal from GPU, set the optimized params in voxelmap
+        
         t3 = time.perf_counter()
 
         # GPU <-> CPU swap
         if to_remove:
             if init:
                 raise ValueError("Should not be removing voxels on first frame")
-            self.prune_and_update_slots(gvm)
+            self.prune_and_update_slots(gvm, to_remove)
+            gvm.active_keys.difference_update(to_remove)
         if to_add:
             self.activate_from_slots(gvm, to_add, kf_id)
 
+        # TODO remove later when working
+        # Asserts gaussians live either in cuda tensor AND active_keys or in CPU map w/ cgb_idx=-1
+        assert all( (slot.cgb_idx == -1) == (key not in gvm.active_keys)
+            for key, slot in gvm.map.items() ), "Inconsistent cgb_idx in slots"
+        print("#gpu", self._xyz.shape[0],
+            "#activeKeys", len(gvm.active_keys))
+        
         t4 = time.perf_counter()
 
         # Filter full scan mask, pass along only new 
@@ -524,19 +533,19 @@ class GaussianModel:
             s.cgb_idx = start + i
 
     @torch.no_grad()
-    def prune_and_update_slots(self, gvm):
+    def prune_and_update_slots(self, gvm, keys_to_remove):
         """
         Push optimized params back to voxel map slots, remove from GPU optimizer.
         """
-        # Map 
-        idx2key = {gvm.map[k].cgb_idx: k for k in gvm.active_keys
-                   if gvm.map[k].cgb_idx >= 0}
+        # Row indices of voxels to remove from GPU
+        drop_idx = [gvm.map[k].cgb_idx for k in keys_to_remove
+                    if gvm.map[k].cgb_idx >= 0]
         
-        keep_mask = torch.zeros(self._xyz.shape[0], dtype=torch.bool, device="cuda")
-        for idx in idx2key:
-            keep_mask[idx] = True
+        keep_mask = torch.ones(self._xyz.shape[0], dtype=torch.bool, device="cuda")
+        keep_mask[drop_idx] = False
 
-        drop_idx = (~keep_mask).nonzero(as_tuple=False).squeeze(1).tolist()
+        # Map idx to key for the slots to remove
+        idx2key = {gvm.map[k].cgb_idx: k for k in keys_to_remove}
 
         # Write to slot cpu_params
         for idx in drop_idx:

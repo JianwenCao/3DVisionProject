@@ -15,11 +15,6 @@ GAUSS_FIELDS = ("xyz", "f_dc", "f_rest", "opacity", "scaling", "rotation", "norm
 class GlobalVoxelSlot:
     """
     Persistent storage for a single voxel's Gaussian parameters and occupancy.
-    Attributes:
-      params: Optional[dict]     # cached init params or updated stats
-      count: int                 # number of points accumulated
-      needs_init: bool           # whether to init Gaussian for this voxel
-      cgb_idx: int               # index in CPU Gaussian Buffer, -1 if inactive
     """
     __slots__ = ('cpu_params', 'cuda_tensors', 'count', 'needs_init', 'cgb_idx')
 
@@ -76,7 +71,6 @@ class GlobalVoxelMap:
     def cuda_params_to_voxel(self, key: Tuple[int,int,int], updated: dict) -> None:
         """
         Incoming, optimized Gaussian parameters from GPU to map.
-        TODO define updated arg
         """
         slot = self.map.get(key)
         if slot is None:
@@ -88,7 +82,12 @@ class GlobalVoxelMap:
                     raise ValueError(f"Invalid field {k} in updated Gaussian parameters.")
                 if v is None:
                     raise ValueError(f"Field {k} in updated Gaussian parameters is None.")
-                slot.cpu_params[k] = v.detach().cpu().numpy()
+                # Accept torch.Tensor *or* numpy.ndarray
+                # TODO figure out why mix of both are passed
+                if torch.is_tensor(v):
+                    slot.cpu_params[k] = v.detach().cpu().numpy()
+                else:
+                    slot.cpu_params[k] = np.asarray(v, dtype=np.float32, order="C")
         except (ValueError, AttributeError) as e:
             raise RuntimeError(f"Error updating voxel parameters: {e}")
 
@@ -167,12 +166,11 @@ class GlobalVoxelMap:
             print(f"[DEBUG] {len(visible_active)}/{len(active_list)} active voxels visible")
         else:
             visible_active = set()
+            
         to_remove = self.active_keys - visible_active
-        for key in to_remove:
-            slot = self.map.get(key)
-            if slot.cgb_idx >= 0:
-                slot.cgb_idx = -1
-            self.active_keys.remove(key)
+        # leave slot.cgb_idx untouched; prune_and_update_slots()
+        # will copy params back and then clear it safely.
+
         if new_keys:
             nk_arr = np.array(new_keys, dtype=np.int32)
             nk_centers = nk_arr.astype(np.float32) * vs + he
@@ -192,7 +190,7 @@ class GlobalVoxelMap:
             if slot.needs_init and slot.cpu_params["xyz"] is None:
                 slot.cpu_params = self._initialize_gaussian_for_voxel(key)
                 slot.needs_init = False
-            if key not in self.active_keys:  # Avoid duplicates
+            if key not in self.active_keys:
                 self.active_keys.add(key)
                 to_add.append(key)
         print(f"[DEBUG] Added {len(to_add)} keys to active_keys, total active_keys: {len(self.active_keys)}")
