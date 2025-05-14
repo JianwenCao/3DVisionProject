@@ -47,10 +47,6 @@ class GlobalVoxelSlot:
 class GlobalVoxelMap:
     """
     A spatial-hash based global voxel map with sliding-window active set.
-
-    Public API:
-      insert_points(points: np.ndarray)
-      update_active(frustum_planes: np.ndarray)
     """
 
     def __init__(self, config: dict):
@@ -135,7 +131,7 @@ class GlobalVoxelMap:
             slot.count += 1
             slot.needs_init = False
             keys_to_init.append(key)
-        return mask, keys_to_init
+        return keys_to_init
 
     def update_active_gaussians(
         self,

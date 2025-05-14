@@ -419,6 +419,7 @@ class GaussianModel:
         print("\n[DEBUG] New frame, called extend_from_lidar_seq")
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
+        gvm = self.global_voxel_map
 
         t0 = time.perf_counter()
 
@@ -428,9 +429,9 @@ class GaussianModel:
 
         t1 = time.perf_counter()
 
-        gvm = self.global_voxel_map
         # Insert map points in only under-filled voxels
-        mask, keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
+        keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
+        
         t2 = time.perf_counter()
         
         # Get keys to add to GPU and keys to remove from GPU/map.active_keys
@@ -444,11 +445,14 @@ class GaussianModel:
                 raise ValueError("Should not be removing voxels on first frame")
             print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
             self.prune_and_update_slots(gvm, to_remove)
-            gvm.active_keys.difference_update(to_remove)
+
+        t4 = time.perf_counter()
+
         if to_add:
             print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
             self.activate_from_slots(gvm, to_add, kf_id)
-            gvm.active_keys.update(to_add)
+
+        t5 = time.perf_counter()
 
         # TODO remove later when working
         # Asserts gaussians live either in cuda tensor AND active_keys or in CPU map w/ gpu_idx=-1
@@ -456,10 +460,11 @@ class GaussianModel:
                 (slot.gpu_idx == -1) == (key not in gvm.active_keys)
                 for key, slot in gvm.map.items()
             ), "Inconsistent gpu_idx in slots"
-        print(f"[DEBUG] #gpu={self._xyz.shape[0]}, #activeKeys={len(gvm.active_keys)}")
+        assert self._xyz.shape[0] == len(gvm.active_keys), \
+            f"GPU size {self._xyz.shape[0]} != active_keys size {len(gvm.active_keys)}"
         
-        t4 = time.perf_counter()
-
+        t6 = time.perf_counter()
+        
         # Filter full scan mask, pass along only new 
         # points in voxel space that are not full
         # fused_point_cloud = fused_point_cloud[mask]
@@ -469,24 +474,17 @@ class GaussianModel:
         # opacities = opacities[mask]
         # normals = normals[mask]
 
-        t5 = time.perf_counter()
-
         # self.extend_from_pcd(
         #     fused_point_cloud, features, scales, rots, opacities, normals, kf_id
         # )
 
-        t6 = time.perf_counter()
-
         print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
-            f"vox check+insert={(t2-t1)*1e3:.1f}, "
-            f"cull={(t3-t2)*1e3:.1f}, "
-            f"swap+prune={(t4-t3)*1e3:.1f}, "
-            f"filter={(t5-t4)*1e3:.1f}, "
-            f"extend={(t6-t5)*1e3:.1f}")
+                f"insert={(t2-t1)*1e3:.1f}, "
+                f"update={(t3-t2)*1e3:.1f}, "
+                f"prune={(t4-t3)*1e3:.1f}, "
+                f"activate={(t5-t4)*1e3:.1f}, "
+                f"assert={(t6-t5)*1e3:.1f}")
 
-    # ------------------------------------------------------------------
-    # GAUSSIAN <--> VOXEL  SWAP  API
-    # ------------------------------------------------------------------
     @torch.no_grad()
     def activate_from_slots(self, gvm, keys, kf_id):
         """
@@ -534,6 +532,9 @@ class GaussianModel:
             assert s.needs_init is False, f"Slot {i} needs init before pushing params to GPU"
             s.gpu_idx = start + i
 
+        # Update the active keys
+        gvm.active_keys.update(keys)
+
     @torch.no_grad()
     def prune_and_update_slots(self, gvm, keys_to_remove):
         """
@@ -556,7 +557,7 @@ class GaussianModel:
         keep_mask = torch.ones(N, dtype=torch.bool, device=self._xyz.device)
         keep_mask[drop_idx] = False
 
-        # Map each dropped row → its voxel key
+        # Map each dropped row to its voxel key
         idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove
                    if 0 <= gvm.map[k].gpu_idx < N}
 
@@ -581,16 +582,15 @@ class GaussianModel:
             gvm.map[key].gpu_idx = -1
         
         # Compact the GPU buffers by dropping the False rows
-        # prune_points takes a boolean mask of rows to DROP, invert keep_mask
         self.prune_points(~keep_mask)
 
-        # Re‐assign gpu_idx **only** for the survivors
+        # Re‐assign gpu_idx for the survivors
         survivors = set(gvm.active_keys) - set(keys_to_remove)
 
         # Compute new row positions for all survivors
         # List of old-indices we kept, in increasing order
         keep_idx = [i for i, keep in enumerate(keep_mask.tolist()) if keep]
-        # Map old_idx → new_idx
+        # Map old_idx to new_idx
         remap = {old: new for new, old in enumerate(keep_idx)}
 
         stale_count = 0
@@ -603,6 +603,7 @@ class GaussianModel:
                 stale_count += 1 
         print(f"[WARNING] Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots")
 
+        # Finally, remove the keys from active_keys
         gvm.active_keys.difference_update(keys_to_remove)
 
 
