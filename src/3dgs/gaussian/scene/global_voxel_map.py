@@ -7,6 +7,8 @@ import numpy as np
 from typing import List, Dict, Set, Tuple, Optional
 import torch
 
+from gaussian.utils.camera_utils import Camera
+
 def voxel_key_from_xyz(xyz: np.ndarray, voxel_size: float) -> tuple:
     return tuple((xyz // voxel_size).astype(int))
 
@@ -137,77 +139,78 @@ class GlobalVoxelMap:
 
     def update_active_gaussians(
         self,
-        frustum_planes: np.ndarray,
+        cam_info,
         new_keys: Optional[List[Tuple[int, int, int]]] = None
     ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
-        vs, he = self.voxel_size, self.voxel_size * 0.5
+        """
+        Update the active voxel set by culling in camera space.
 
+        cam_info: Camera object (from camera_utils) with .R, .T, .fx, .fy, .cx, .cy,
+                  .image_width, .image_height
+        new_keys: list of voxel‐keys inserted this frame
+        Returns (to_add, to_remove)
+        """
+        vs, he = self.voxel_size, self.voxel_size * 0.5
         old_active = set(self.active_keys)
 
-        # Compute world‐space centers
-        def centers_of(keys):
+        # helper: world‐space centers of a set of keys
+        def compute_centers(keys):
             arr = np.array(list(keys), dtype=np.int32)
             return arr.astype(np.float32) * vs + he
 
-        # 1) Cull existing actives, if any
+        # extract camera parameters
+        R = cam_info.R.cpu().numpy()            # (3×3) world→camera rotation
+        T = cam_info.T.cpu().numpy()            # (3,)   world→camera translation
+        fx = float(cam_info.fx);  fy = float(cam_info.fy)
+        cx = float(cam_info.cx);  cy = float(cam_info.cy)
+        W  = int(cam_info.image_width)
+        H  = int(cam_info.image_height)
+
+        # camera‐space cull: positive z, and 0 ≤ u < W, 0 ≤ v < H
+        def camera_cull(centers_w):
+            # 1) transform to camera coords
+            #    p_cam = R @ p_world + T  → via (centers · R^T + T)
+            p_cam = centers_w @ R.T + T[None, :]
+            x, y, z = p_cam[:,0], p_cam[:,1], p_cam[:,2]
+
+            # 2) project into pixel coords
+            u = x * fx / z + cx
+            v = y * fy / z + cy
+
+            return (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+
+        # 1) Cull existing active voxels
         if old_active:
-            old_centers    = centers_of(old_active)
-            mask_old       = self._cull_centers(old_centers, frustum_planes, he)
-            visible_active = {
-                k for k, v in zip(old_active, mask_old) if v
-            }
+            old_centers    = compute_centers(old_active)
+            mask_old       = camera_cull(old_centers)
+            visible_active = {k for k, v in zip(old_active, mask_old) if v}
         else:
             visible_active = set()
 
-        # 2) Which of the new insertions actually fall in view?
+        # 2) Cull newly inserted voxels
         if new_keys:
-            new_set = set(new_keys)
-            new_centers = centers_of(new_set)
-            mask_new    = self._cull_centers(new_centers, frustum_planes, he)
-            visible_new = {
-                k for k, v in zip(new_set, mask_new) if v
-            }
+            new_set     = set(new_keys)
+            new_centers = compute_centers(new_set)
+            mask_new    = camera_cull(new_centers)
+            visible_new = {k for k, v in zip(new_set, mask_new) if v}
         else:
             visible_new = set()
 
-        # 3) First‐frame fallback: if we're totally empty, just seed with all new
+        # 3) Fallback on very first frame: if nothing would be visible, just add all
         if not old_active and new_keys and not visible_new:
             visible_new = set(new_keys)
 
-        # 4) Compute diffs
+        # 4) Figure out exactly which to add / remove
         to_remove = list(old_active - visible_active)
         to_add    = list(visible_new - old_active)
 
-        print(f"[DEBUG] Visible old: {len(visible_active)}/{len(old_active)}, "
-            f"visible new: {len(visible_new)}/{len(new_keys or [])}")
-        print(f"[DEBUG] Will add {len(to_add)}, remove {len(to_remove)}")
+        # (optional debug)
+        print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
+              f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
+        print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
 
         return to_add, to_remove
 
-    def _cull_centers(
-        self,
-        centers: np.ndarray,   # (N,3)
-        planes: np.ndarray,    # (6,4) – [nx,ny,nz,d], plane eq: n⋅p + d ≤ 0 → inside
-        half_extent: float
-    ) -> np.ndarray:
-        """
-        Vectorized AABB↔frustum test: keep a voxel iff *all* of its 8 corners
-        lie on the *inside* side of *every* plane.
-        We do this by selecting, for each plane, the AABB corner that is
-        farthest along that plane’s normal; if *that* corner is still inside
-        (n·corner + d ≤ 0), the entire box intersects the frustum.
-        """
-        # 1) For each plane, pick the “farthest” corner
-        signs   = np.sign(planes[:, :3])                   # (6,3)
-        corners = centers[None,:,:] + half_extent*signs[:,None,:]  # (6,N,3)
-
-        # 2) Compute signed distance of those corners to each plane
-        normals = planes[:,:3][:,None,:]                   # (6,1,3)
-        dists   = np.sum(corners * normals, axis=2)        # (6,N)
-        dists  += planes[:,3:4]                            # (6,N)
-
-        # 3) A box is “inside” iff *all* its farthest‐corners satisfy n·p + d ≤ 0
-        return np.all(dists <= 0, axis=0)                  # (N,)  True = keep
 
     def _initialize_gaussian_for_voxel(self, key: Tuple[int, int, int]) -> dict:
         """

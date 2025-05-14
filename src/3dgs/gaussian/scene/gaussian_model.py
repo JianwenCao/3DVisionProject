@@ -432,23 +432,9 @@ class GaussianModel:
         # Insert map points in only under-filled voxels
         mask, keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
         t2 = time.perf_counter()
-
-        # Frustum-cull
-        planes = cam_info.frustum_planes.cpu().numpy()
-
-        # DEBUG Estimate frustum z-range
-        near_normal, near_d = planes[4, :3], planes[4, 3]
-        far_normal, far_d = planes[5, :3], planes[5, 3]
-        near_z = -near_d / (near_normal[2] + 1e-6)
-        far_z = -far_d / (far_normal[2] + 1e-6)
-        # print(f"[DEBUG] Frustum z-range: near={near_z:.2f}m, far={far_z:.2f}m")
         
-        # OLD LOGIC Get keys to add to GPU and keys to remove from GPU/map.active_keys
-        to_add, to_remove = gvm.update_active_gaussians(planes, keys_to_init)
-        
-        # # New: keep only those keys whose GPU row is valid
-        # to_add, raw_remove = gvm.update_active_gaussians(planes, keys_to_init)
-        # to_remove = [k for k in raw_remove if gvm.map[k].gpu_idx >= 0]
+        # Get keys to add to GPU and keys to remove from GPU/map.active_keys
+        to_add, to_remove = gvm.update_active_gaussians(cam_info, keys_to_init)
         
         t3 = time.perf_counter()
 
