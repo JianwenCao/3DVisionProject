@@ -472,34 +472,38 @@ class GaussianModel:
 
         idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove
                    if 0 <= gvm.map[k].gpu_idx < N}
+        
+        drop_idx_tensor = torch.tensor(drop_idx, dtype=torch.long, device=self._xyz.device)
+        xyz = self._xyz[drop_idx_tensor].cpu().numpy()    # (D,3)
+        f_dc = self._features_dc[drop_idx_tensor,:,0].cpu().numpy()  # (D,C)
+        f_rest = self._features_rest[drop_idx_tensor].cpu().numpy()    # (D,…)
+        opacity = self._opacity[drop_idx_tensor].cpu().numpy()      # (D,1)
+        scaling = self._scaling[drop_idx_tensor].cpu().numpy()      # (D,3)
+        rot = self._rotation[drop_idx_tensor].cpu().numpy()      # (D,4)
+        normals = self.normals[drop_idx_tensor].cpu().numpy()      # (D,3)
 
-        for idx in drop_idx:
-            key = idx2key.get(idx, None)
-            if key is None:
-                print(f"[DEBUG] Found stale gpu_idx {idx} even after clamping, should not happen.")
-                continue
-            
-            params = {
-                "xyz": self._xyz[idx].cpu().numpy(),
-                "f_dc": self._features_dc[idx, :, 0].cpu().numpy(),
-                "f_rest": self._features_rest[idx].cpu().numpy(),
-                "opacity": self._opacity[idx].cpu().numpy(),
-                "scaling": self._scaling[idx].cpu().numpy(),
-                "rotation": self._rotation[idx].cpu().numpy(),
-                "normals": self.normals[idx].cpu().numpy()
-            }
+        for i, idx in enumerate(drop_idx):
+            key = idx2key[idx]
             # Write params to CPU and mark "not on GPU"
-            gvm.cuda_params_to_voxel(key, params)
+            gvm.cuda_params_to_voxel(key, {
+                "xyz":     xyz[i],
+                "f_dc":    f_dc[i],
+                "f_rest":  f_rest[i],
+                "opacity": opacity[i],
+                "scaling": scaling[i],
+                "rotation":rot[i],
+                "normals":normals[i],
+            })
             gvm.map[key].gpu_idx = -1
         
-        # Drop rows from GPU tensors
+        # Drop rows from GPU tensors, can maybe be optimized w/ swap+pop
         self.prune_points(~keep_mask)
 
         # Re‐assign gpu_idx for the survivors
         survivors = set(gvm.active_keys) - set(keys_to_remove)
 
         # Compute new row indices for all survivors
-        keep_idx = [i for i, keep in enumerate(keep_mask.tolist()) if keep]
+        keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1).cpu().numpy()
         remap = {old: new for new, old in enumerate(keep_idx)}
 
         stale_count = 0
