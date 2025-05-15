@@ -76,7 +76,7 @@ class GlobalVoxelMap:
             raise RuntimeError(f"Error updating voxel parameters: {e}")
 
 
-    def insert_gaussians(self, fused_point_cloud, features, scales, rots, opacities, normals):
+    def insert_gaussians(self, fused_point_cloud, features, scales, rots, opacities, normals, keys):
         """
         For incoming point cloud and initialized parameters, insert into voxel
         map iff the voxel is empty or underfilled.
@@ -85,7 +85,6 @@ class GlobalVoxelMap:
         """
         # Find voxels that are not full (mask_np)
         pts_np = fused_point_cloud.cpu().numpy() # (M,3)
-        keys = np.floor(pts_np / self.voxel_size).astype(np.int32) # (M,3)
         default_slot = GlobalVoxelSlot()
         counts = np.fromiter(
             (self.map.get(tuple(k), default_slot).count
@@ -94,6 +93,13 @@ class GlobalVoxelMap:
             count=keys.shape[0]
         )
         mask_np = counts < self.max_points_per_voxel
+
+        xyz_cpu     = fused_point_cloud.detach().cpu().numpy()  # (M,3)
+        feats_cpu   = features.detach().cpu().numpy()  # (M,3,C)
+        scales_cpu  = scales.detach().cpu().numpy()  # (M,3)
+        rots_cpu    = rots.detach().cpu().numpy()  # (M,4) or (M,3,3)
+        opac_cpu    = opacities.detach().cpu().numpy()  # (M,1)
+        norms_cpu   = normals.detach().cpu().numpy()  # (M,3)
         
         keys_to_init: List[Tuple[int,int,int]] = []
         for i, keep in enumerate(mask_np):
@@ -109,13 +115,13 @@ class GlobalVoxelMap:
                 print(f"[WARN] insert_gaussians: voxel {key} already full (count={slot.count}). Redundant insert ignored.")
                 continue
             
-            slot.cpu_params["xyz"] = fused_point_cloud[i].detach().cpu().numpy()
-            slot.cpu_params["f_dc"] = features[i, :, 0].detach().cpu().numpy()
-            slot.cpu_params["f_rest"] = features[i, :, 1:].detach().cpu().numpy()
-            slot.cpu_params["scaling"] = scales[i].detach().cpu().numpy()
-            slot.cpu_params["rotation"] = rots[i].detach().cpu().numpy()
-            slot.cpu_params["opacity"] = opacities[i].detach().cpu().numpy()
-            slot.cpu_params["normals"] = normals[i].detach().cpu().numpy()
+            slot.cpu_params["xyz"] = xyz_cpu[i]
+            slot.cpu_params["f_dc"] = feats_cpu[i, :, 0]
+            slot.cpu_params["f_rest"] = feats_cpu[i, :, 1:]
+            slot.cpu_params["scaling"] = scales_cpu[i]
+            slot.cpu_params["rotation"] = rots_cpu[i]
+            slot.cpu_params["opacity"] = opac_cpu[i]
+            slot.cpu_params["normals"] = norms_cpu[i]
 
             slot.count += 1
             slot.needs_init = False

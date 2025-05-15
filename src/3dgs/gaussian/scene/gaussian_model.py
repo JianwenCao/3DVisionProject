@@ -155,12 +155,12 @@ class GaussianModel:
         new_rgb = rgb
         new_normals = mrnp.toNumpyArray(cloud.normals)
 
+        # Incoming point keys
         keys, inv = np.unique(
             np.floor(new_xyz / voxel_size).astype(int),
             axis=0, return_inverse=True)
         
         M = keys.shape[0]
-        # Counts per voxel
         counts = np.bincount(inv, minlength=M).astype(np.float32) # (M,)
 
         # Sum up xyz, rgb, normals per voxel
@@ -212,7 +212,7 @@ class GaussianModel:
             0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
         )
 
-        return fused_point_cloud, features, scales, rots, opacities, normals_cuda
+        return fused_point_cloud, features, scales, rots, opacities, normals_cuda, keys
 
     @staticmethod
     def batch_gaussian_rotation(normals: torch.Tensor) -> torch.Tensor:
@@ -359,13 +359,13 @@ class GaussianModel:
 
         t0 = time.perf_counter()
 
-        fused_point_cloud, features, scales, rots, opacities, normals = (
+        fused_point_cloud, features, scales, rots, opacities, normals, keys = (
             self.create_pcd_from_lidar_points(cam_info, xyz, rgb, init)
         )
 
         t1 = time.perf_counter()
 
-        keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
+        keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals, keys) # TODO Set gaussian params per point here?
         
         t2 = time.perf_counter()
         
@@ -417,9 +417,8 @@ class GaussianModel:
             return
         
         def cat(field, requires_grad=True):
-            ts = [torch.as_tensor(s.cpu_params[field], dtype=torch.float32, device="cuda") for s in slots]
-            t = torch.stack(ts, dim=0)
-            t.requires_grad_(requires_grad)
+            arr = np.stack([slot.cpu_params[field] for slot in slots], axis=0)
+            t = torch.from_numpy(arr).to("cuda").requires_grad_(requires_grad)
             return t
         
         new_xyz = nn.Parameter(cat("xyz"))
