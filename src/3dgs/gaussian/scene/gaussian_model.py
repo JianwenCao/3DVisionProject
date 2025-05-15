@@ -137,74 +137,10 @@ class GaussianModel:
         depth = o3d.geometry.Image(depthmap.astype(np.float32))
 
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
-    
-    # def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
-    #     # Load octree parameters from config
-    #     voxel_size = self.config["Dataset"].get("voxel_size", 0.5)  # Root voxel size in meters
-    #     max_layer = self.config["Dataset"].get("max_layer", 2)  # Maximum octree depth
-    #     max_points_num = self.config["Dataset"].get("max_points_num", 50)  # Max points per voxel
-    #     layer_init_num = self.config["Dataset"].get("layer_init_num", [5, 5, 5, 5, 5])  # Per-layer point thresholds
-    #
-    #     voxel_size = self.config["Dataset"].get(
-    #         "voxel_size_init" if init else "voxel_size", 2.0
-    #     )
-    #
-    #     # Build global voxel grid, xyz already in world coords, compute normals
-    #     pcd_world = o3d.geometry.PointCloud()
-    #     pcd_world.points = o3d.utility.Vector3dVector(xyz)
-    #     pcd_world.colors = o3d.utility.Vector3dVector(rgb)
-    #     pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
-    #     pcd_ds.estimate_normals(
-    #         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-    #     )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
-    #
-    #     pcd_ds.orient_normals_consistent_tangent_plane(k=10)
-    #     cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
-    #     pcd_ds.orient_normals_towards_camera_location(cam_pose)
-    #
-    #     new_xyz = np.asarray(pcd_ds.points)
-    #     new_rgb = np.asarray(pcd_ds.colors)
-    #     new_normals = np.asarray(pcd_ds.normals)
-    #
-    #     pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
-    #     self.ply_input = pcd
-    #
-    #     fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
-    #     fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
-    #     features = torch.zeros(
-    #         (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
-    #         device="cuda", dtype=torch.float32
-    #     )
-    #     features[:, :3, 0] = fused_color
-    #     features[:, 3:, 1:] = 0.0
-    #
-    #     point_size = self.config["Dataset"]["point_size"]
-    #     dist2 = torch.clamp_min(distCUDA2(fused_point_cloud), 1e-7) * point_size
-    #     scales = torch.log(torch.sqrt(dist2))[..., None]
-    #     if not self.isotropic:
-    #         scales = scales.repeat(1, 3)
-    #
-    #     if self.config["Training"]["rotation_init"]:
-    #         normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
-    #         normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
-    #         rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
-    #         # For normal supervision:
-    #         normals_cuda = torch.from_numpy(new_normals).float().cuda()
-    #     else:
-    #         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-    #         rots[:, 0] = 1
-    #         normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
-    #
-    #     num_points = fused_point_cloud.shape[0]
-    #     opacities = inverse_sigmoid(
-    #         0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
-    #     )
-    #
-    #     return fused_point_cloud, features, scales, rots, opacities, normals_cuda
 
     def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
         # Spatial hash root voxel size in meters
-        voxel_size = self.config["Mapping"].get("voxel_size", 0.1)  # Root voxel size in meters
+        voxel_size = self.config["Mapping"].get("voxel_size", 0.1)
 
         cloud = mrnp.pointCloudFromPoints(xyz)
         settings = mr.TriangulationHelpersSettings()
@@ -429,33 +365,31 @@ class GaussianModel:
 
         t1 = time.perf_counter()
 
-        # Insert map points in only under-filled voxels
         keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals) # TODO Set gaussian params per point here?
         
         t2 = time.perf_counter()
         
-        # Get keys to add to GPU and keys to remove from GPU/map.active_keys
-        to_add, to_remove = gvm.update_active_gaussians(cam_info, keys_to_init)
+        # Get keys to add/remove from GPU
+        to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, keys_to_init)
         
         t3 = time.perf_counter()
 
-        # GPU <-> CPU swap
         if to_remove:
             if init:
                 raise ValueError("Should not be removing voxels on first frame")
             print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
-            self.prune_and_update_slots(gvm, to_remove)
+            self._gpu_remove_inactive_gaussians(gvm, to_remove)
 
         t4 = time.perf_counter()
 
         if to_add:
             print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
-            self.activate_from_slots(gvm, to_add, kf_id)
+            self._gpu_add_active_gaussians(gvm, to_add, kf_id)
 
         t5 = time.perf_counter()
 
-        # TODO remove later when working
-        # Asserts gaussians live either in cuda tensor AND active_keys or in CPU map w/ gpu_idx=-1
+        # TODO remove later, assert gaussians live either in cuda 
+        # tensor AND active_keys or in CPU map w/ gpu_idx=-1
         assert all(
                 (slot.gpu_idx == -1) == (key not in gvm.active_keys)
                 for key, slot in gvm.map.items()
@@ -464,32 +398,18 @@ class GaussianModel:
             f"GPU size {self._xyz.shape[0]} != active_keys size {len(gvm.active_keys)}"
         
         t6 = time.perf_counter()
-        
-        # Filter full scan mask, pass along only new 
-        # points in voxel space that are not full
-        # fused_point_cloud = fused_point_cloud[mask]
-        # features = features[mask]
-        # scales = scales[mask]
-        # rots = rots[mask]
-        # opacities = opacities[mask]
-        # normals = normals[mask]
-
-        # self.extend_from_pcd(
-        #     fused_point_cloud, features, scales, rots, opacities, normals, kf_id
-        # )
 
         print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
                 f"insert={(t2-t1)*1e3:.1f}, "
-                f"update={(t3-t2)*1e3:.1f}, "
-                f"prune={(t4-t3)*1e3:.1f}, "
-                f"activate={(t5-t4)*1e3:.1f}, "
+                f"cull={(t3-t2)*1e3:.1f}, "
+                f"gpu_remove={(t4-t3)*1e3:.1f}, "
+                f"gpu_add={(t5-t4)*1e3:.1f}, "
                 f"assert={(t6-t5)*1e3:.1f}")
 
     @torch.no_grad()
-    def activate_from_slots(self, gvm, keys, kf_id):
+    def _gpu_add_active_gaussians(self, gvm, keys, kf_id):
         """
-        Bring the specified voxel keys onto GPU 
-        and append to optimization tensors.
+        Add voxel keys to GPU, append to optimization tensors, update active_keys.
         """
         slots = [gvm.map[k] for k in keys]
         if not slots:
@@ -532,18 +452,12 @@ class GaussianModel:
             assert s.needs_init is False, f"Slot {i} needs init before pushing params to GPU"
             s.gpu_idx = start + i
 
-        # Update the active keys
         gvm.active_keys.update(keys)
 
     @torch.no_grad()
-    def prune_and_update_slots(self, gvm, keys_to_remove):
+    def _gpu_remove_inactive_gaussians(self, gvm, keys_to_remove):
         """
-        Copy optimized params from GPU rows back into CPU slots.
-        Remove those rows from self._xyz, self._features_*, etc.
-        Update each slot's gpu_idx to reflect its new row in the compacted buffers.
-
-        After calling, gvm.active_keys contains correct slot.gpu_idx
-        on smaller CUDA tensors.
+        Copy optimized params from GPU back into CPU voxel, compact, update active_keys.
         """
         N = self._xyz.shape[0] # Total rows currently on GPU
 
@@ -557,11 +471,9 @@ class GaussianModel:
         keep_mask = torch.ones(N, dtype=torch.bool, device=self._xyz.device)
         keep_mask[drop_idx] = False
 
-        # Map each dropped row to its voxel key
         idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove
                    if 0 <= gvm.map[k].gpu_idx < N}
 
-        # Write to slot cpu_params
         for idx in drop_idx:
             key = idx2key.get(idx, None)
             if key is None:
@@ -581,16 +493,14 @@ class GaussianModel:
             gvm.cuda_params_to_voxel(key, params)
             gvm.map[key].gpu_idx = -1
         
-        # Compact the GPU buffers by dropping the False rows
+        # Drop rows from GPU tensors
         self.prune_points(~keep_mask)
 
         # Re‐assign gpu_idx for the survivors
         survivors = set(gvm.active_keys) - set(keys_to_remove)
 
-        # Compute new row positions for all survivors
-        # List of old-indices we kept, in increasing order
+        # Compute new row indices for all survivors
         keep_idx = [i for i, keep in enumerate(keep_mask.tolist()) if keep]
-        # Map old_idx to new_idx
         remap = {old: new for new, old in enumerate(keep_idx)}
 
         stale_count = 0
@@ -603,7 +513,6 @@ class GaussianModel:
                 stale_count += 1 
         print(f"[WARNING] Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots")
 
-        # Finally, remove the keys from active_keys
         gvm.active_keys.difference_update(keys_to_remove)
 
 

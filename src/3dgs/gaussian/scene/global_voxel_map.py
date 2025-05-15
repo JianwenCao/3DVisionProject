@@ -1,8 +1,3 @@
-# voxel_map.py
-# ------------------------------------------
-# Module for maintaining a global spatial-hash voxel map
-# ------------------------------------------
-
 import numpy as np
 from typing import List, Dict, Set, Tuple, Optional
 import torch
@@ -25,14 +20,16 @@ class GlobalVoxelSlot:
         self.needs_init = True
         self.gpu_idx = -1
 
-        # self.gaussians_per_voxel = None # TODO later, dynamically allocate this based on texture
         self.cpu_params = {k: None for k in GAUSS_FIELDS}
         self.cuda_tensors = {k: torch.empty(0, device="cuda") for k in GAUSS_FIELDS}
 
+        # TODO later, dynamically allocate this based on texture
+        # Decide if MAP param or VOXEL param
+        # self.gaussians_per_voxel = None 
+
     def to_cuda_tuple(self):
         """
-        Convert the stored voxel parameters to a tuple of CUDA tensors.
-        For GPU processing.
+        Convert CPU gaussian params to tensor tuple for GPU.
         """
         out = []
         for k in GAUSS_FIELDS:
@@ -46,35 +43,31 @@ class GlobalVoxelSlot:
 
 class GlobalVoxelMap:
     """
-    A spatial-hash based global voxel map with sliding-window active set.
+    Spatial-hash based global voxel map with sliding-window active set.
     """
 
     def __init__(self, config: dict):
         self.voxel_size: float = config["Mapping"].get("voxel_size", 0.1)
         self.max_points_per_voxel: int = config["Mapping"].get("max_points_per_voxel", 1)
-        self.max_active_gaussians: int = config["Mapping"].get("max_active_gaussians", 10000)
+        self.max_active_gaussians: int = config["Mapping"].get("max_active_gaussians", 20000) # TODO implement
 
-        # hash map: voxel_key -> GlobalVoxelSlot
         self.map: Dict[Tuple[int, int, int], GlobalVoxelSlot] = {}
-        # currently visible (active) voxel keys, THESE SHOULD GO TO GPU
         self.active_keys: Set[Tuple[int, int, int]] = set()
 
     def cuda_params_to_voxel(self, key: Tuple[int,int,int], updated: dict) -> None:
         """
-        Incoming, optimized Gaussian parameters from GPU to map.
+        Move optimized Gaussian parameters from GPU to map.
         """
         slot = self.map.get(key)
         if slot is None:
             raise ValueError("GPU trying to place optimized parameters in voxel slot that does not exist.")
-        # detach, move to CPU, convert to numpy
         try:
             for k, v in updated.items():
                 if k not in GAUSS_FIELDS:
                     raise ValueError(f"Invalid field {k} in updated Gaussian parameters.")
                 if v is None:
                     raise ValueError(f"Field {k} in updated Gaussian parameters is None.")
-                # Accept torch.Tensor *or* numpy.ndarray
-                # TODO figure out why mix of both are passed
+                # TODO figure out why mix of tensor and ndarray are passed
                 if torch.is_tensor(v):
                     slot.cpu_params[k] = v.detach().cpu().numpy()
                 else:
@@ -85,14 +78,13 @@ class GlobalVoxelMap:
 
     def insert_gaussians(self, fused_point_cloud, features, scales, rots, opacities, normals):
         """
-        For each point, compute the voxel key and check if the voxel exists / is full.
-        Insert raw gaussian param data into voxel slots iff the voxel is empty/underfilled
-        Return list of voxel-keys that were flagged for init this frame.
+        For incoming point cloud and initialized parameters, insert into voxel
+        map iff the voxel is empty or underfilled.
+
+        Return: list of voxel-keys that were initialized in the map.
         """
         # Find voxels that are not full (mask_np)
         pts_np = fused_point_cloud.cpu().numpy() # (M,3)
-
-        # Compute incoming voxel spatial keys
         keys = np.floor(pts_np / self.voxel_size).astype(np.int32) # (M,3)
         default_slot = GlobalVoxelSlot()
         counts = np.fromiter(
@@ -102,10 +94,8 @@ class GlobalVoxelMap:
             count=keys.shape[0]
         )
         mask_np = counts < self.max_points_per_voxel
-        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device)
         
         keys_to_init: List[Tuple[int,int,int]] = []
-        # TODO vectorize this or do in batch
         for i, keep in enumerate(mask_np):
             if not keep:
                 continue
@@ -119,7 +109,6 @@ class GlobalVoxelMap:
                 print(f"[WARN] insert_gaussians: voxel {key} already full (count={slot.count}). Redundant insert ignored.")
                 continue
             
-            # TODO Maybe don't detach if initializing first frames
             slot.cpu_params["xyz"] = fused_point_cloud[i].detach().cpu().numpy()
             slot.cpu_params["f_dc"] = features[i, :, 0].detach().cpu().numpy()
             slot.cpu_params["f_rest"] = features[i, :, 1:].detach().cpu().numpy()
@@ -133,16 +122,15 @@ class GlobalVoxelMap:
             keys_to_init.append(key)
         return keys_to_init
 
-    def update_active_gaussians(
+    def cull_and_diff_active_voxels(
         self,
-        cam_info,
+        cam_info: Camera,
         new_keys: Optional[List[Tuple[int, int, int]]] = None
     ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
         """
         Update the active voxel set by culling in camera space.
 
-        cam_info: Camera object (from camera_utils) with .R, .T, .fx, .fy, .cx, .cy,
-                  .image_width, .image_height
+        cam_info: current frame Camera obj
         new_keys: list of voxel‐keys inserted this frame
         Returns (to_add, to_remove)
         """
@@ -200,19 +188,8 @@ class GlobalVoxelMap:
         to_remove = list(old_active - visible_active)
         to_add    = list(visible_new - old_active)
 
-        # (optional debug)
         print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
               f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
         print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
 
         return to_add, to_remove
-
-
-    def _initialize_gaussian_for_voxel(self, key: Tuple[int, int, int]) -> dict:
-        """
-        Default Gaussian init: center at voxel centroid, scale = log(voxel_size).
-        Returns a dict of init parameters for integration.
-        """
-        center = np.array(key) * self.voxel_size + self.voxel_size * 0.5
-        init_scale = np.log(self.voxel_size)
-        return {'xyz': center, 'scale': init_scale}
