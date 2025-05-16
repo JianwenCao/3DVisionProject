@@ -249,11 +249,30 @@ class GaussianModel:
 
         if self.config["Training"]["rotation_init"]:
             # For normal supervision:
-            normals_cuda = torch.from_numpy(norms).float().cuda()
+            normals_cv = torch.from_numpy(norms).float().cuda() # OpenCV normals
+            flip = torch.tensor([1.0, -1.0, -1.0], device=normals_cv.device)
+            normals_cuda = normals_cv * flip # OpenGL normals
 
-            normal_rot_mats = self.batch_gaussian_rotation(normals_cuda)
-            normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
-            rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
+            R_local2world = self.batch_gaussian_rotation(normals_cuda)
+            R_world2local = R_local2world.transpose(1,2)
+            # returns (N,4) in (x,y,z,w) order
+            q_xyzw = self.batch_matrix_to_quaternion(R_world2local)
+            # invert it (since you want world→local)
+            # note: for unit‐quats, inv(q) = conj(q) = [–x,–y,–z, w]
+            q_inv = torch.stack([
+            -q_xyzw[:,0],  # –x
+            -q_xyzw[:,1],  # –y
+            -q_xyzw[:,2],  # –z
+            q_xyzw[:,3],  #  w
+            ], dim=1)
+
+            # finally reorder into the kernel’s [w,x,y,z]
+            rots = torch.stack([
+            q_inv[:,3],
+            q_inv[:,0],
+            q_inv[:,1],
+            q_inv[:,2],
+            ], dim=1).clone().detach().requires_grad_(True).to("cuda")
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1

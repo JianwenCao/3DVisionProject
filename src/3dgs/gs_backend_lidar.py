@@ -169,7 +169,6 @@ class GSBackEnd(mp.Process):
         )
 
         if self.debug:
-            print(f"Added new keyframe {frame_idx} with {self.gaussians.num_points} points")
             optimizer_state_size = sum(p.numel() * 4 for group in self.gaussians.optimizer.param_groups for p in group["params"])
             print(f"Optimizer state size after extend_from_lidar_seq: {optimizer_state_size / 1024**3:.3f} GB")
 
