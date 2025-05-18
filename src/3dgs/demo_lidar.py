@@ -117,7 +117,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--dataset", "-d",
-        default="../../dataset/CBD_Building_01_full",
+        default="../../dataset/CBD_Building_01_hi",
         help="Path to local dataset w.r.t to the current working directory."
     )
     parser.add_argument(
@@ -127,7 +127,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--num_frames", "-n", type=int,
-        default=1180,
+        default=105,
         help="Number of frames to process."
     )
     args = parser.parse_args()
