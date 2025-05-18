@@ -235,6 +235,12 @@ def get_loss_lidar_normal(gaussians):
     cos_sim = torch.sum(gauss_rots * target_normals, dim=-1)
     cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
     normal_loss = 1.0 - cos_sim
+
+    normal_norm = torch.norm(gaussians.normals, dim=-1)
+    valid_mask = normal_norm >= 0.2
+    normal_loss[~valid_mask] = 0.0
+
+
     return normal_loss.mean()
 
 def get_loss_mapping_rgb(config, image, viewpoint):

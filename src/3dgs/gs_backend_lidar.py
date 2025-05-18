@@ -100,7 +100,6 @@ class GSBackEnd(mp.Process):
             idx = idx.item()
             idx = packet['tstamp'][i].item()
             tstamp = packet['tstamp'][i].item()
-            # Removed normals from Camera initialization
             viewpoint = Camera.init_from_tracking(packet["images"][i] / 255.0, None, None, w2c[i], idx,
                                                   self.projection_matrix, self.K, tstamp)
             if idx not in self.current_window:
@@ -118,7 +117,7 @@ class GSBackEnd(mp.Process):
                 else:
                     self.viewpoints[idx] = viewpoint
 
-        self.map(self.current_window, iters=10)
+        self.map(self.current_window, iters=100)
 
         if self.use_gui:
             keyframes = [self.viewpoints[kf_idx] for kf_idx in self.current_window]
@@ -232,13 +231,12 @@ class GSBackEnd(mp.Process):
                     render_pkg["visibility_filter"],
                     render_pkg["radii"],
                     render_pkg["n_touched"])
-                # loss_mapping += self.lambda_normal * get_loss_lidar_normal(self.gaussians) / 10.
+                loss_mapping += self.lambda_normal * get_loss_lidar_normal(self.gaussians) / 10.
                 loss_mapping += get_loss_mapping_rgb(self.config, image, viewpoint)
                 viewspace_point_tensor_acm.append(viewspace_point_tensor)
                 visibility_filter_acm.append(visibility_filter)
                 radii_acm.append(radii)
 
-            loss_mapping += self.lambda_normal * get_loss_lidar_normal(self.gaussians)
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
             loss_mapping += 10 * isotropic_loss.mean()
@@ -263,7 +261,7 @@ class GSBackEnd(mp.Process):
                 #         self.size_threshold,
                 #     )
 
-                self.gaussian_reset = 501
+                self.gaussian_reset = 201
                 if (self.iteration_count % self.gaussian_reset) == 0 and (not update_gaussian):
                     Log("Resetting the opacity of non-visible Gaussians")
                     self.gaussians.reset_opacity_nonvisible(visibility_filter_acm)
