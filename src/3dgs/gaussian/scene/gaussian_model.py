@@ -125,70 +125,6 @@ class GaussianModel:
         depth = o3d.geometry.Image(depthmap.astype(np.float32))
 
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
-    
-    # def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
-    #     # Load octree parameters from config
-    #     voxel_size = self.config["Dataset"].get("voxel_size", 0.5)  # Root voxel size in meters
-    #     max_layer = self.config["Dataset"].get("max_layer", 2)  # Maximum octree depth
-    #     max_points_num = self.config["Dataset"].get("max_points_num", 50)  # Max points per voxel
-    #     layer_init_num = self.config["Dataset"].get("layer_init_num", [5, 5, 5, 5, 5])  # Per-layer point thresholds
-    #
-    #     voxel_size = self.config["Dataset"].get(
-    #         "voxel_size_init" if init else "voxel_size", 2.0
-    #     )
-    #
-    #     # Build global voxel grid, xyz already in world coords, compute normals
-    #     pcd_world = o3d.geometry.PointCloud()
-    #     pcd_world.points = o3d.utility.Vector3dVector(xyz)
-    #     pcd_world.colors = o3d.utility.Vector3dVector(rgb)
-    #     pcd_ds = pcd_world.voxel_down_sample(voxel_size=voxel_size)
-    #     pcd_ds.estimate_normals(
-    #         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-    #     )  # TODO tune search params. Radius 1.0, max_nn 60 also works well.
-    #
-    #     pcd_ds.orient_normals_consistent_tangent_plane(k=10)
-    #     cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
-    #     pcd_ds.orient_normals_towards_camera_location(cam_pose)
-    #
-    #     new_xyz = np.asarray(pcd_ds.points)
-    #     new_rgb = np.asarray(pcd_ds.colors)
-    #     new_normals = np.asarray(pcd_ds.normals)
-    #
-    #     pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
-    #     self.ply_input = pcd
-    #
-    #     fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
-    #     fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
-    #     features = torch.zeros(
-    #         (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
-    #         device="cuda", dtype=torch.float32
-    #     )
-    #     features[:, :3, 0] = fused_color
-    #     features[:, 3:, 1:] = 0.0
-    #
-    #     point_size = self.config["Dataset"]["point_size"]
-    #     dist2 = torch.clamp_min(distCUDA2(fused_point_cloud), 1e-7) * point_size
-    #     scales = torch.log(torch.sqrt(dist2))[..., None]
-    #     if not self.isotropic:
-    #         scales = scales.repeat(1, 3)
-    #
-    #     if self.config["Training"]["rotation_init"]:
-    #         normal_rot_mats = self.batch_gaussian_rotation(torch.from_numpy(new_normals).float().cuda())
-    #         normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
-    #         rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
-    #         # For normal supervision:
-    #         normals_cuda = torch.from_numpy(new_normals).float().cuda()
-    #     else:
-    #         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-    #         rots[:, 0] = 1
-    #         normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
-    #
-    #     num_points = fused_point_cloud.shape[0]
-    #     opacities = inverse_sigmoid(
-    #         0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
-    #     )
-    #
-    #     return fused_point_cloud, features, scales, rots, opacities, normals_cuda
 
     def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
         # Spatial hash root voxel size in meters
@@ -242,141 +178,56 @@ class GaussianModel:
         features[:, 3:, 1:] = 0.0
 
         # Initialize scales using voxel size and thin s_delta
-        s_xy = torch.full((M,), voxel_size,  device="cuda") # tangent extents
+        s_xy = torch.full((M,), voxel_size,  device="cuda")
         s_delta = torch.full_like(s_xy, 0.01) # 1 cm slice
         scales = torch.stack([s_xy, s_xy, s_delta], dim=-1) # (M,3)
         scales = torch.log(scales)
 
         if self.config["Training"]["rotation_init"]:
-            # For normal supervision:
-            normals_cv = torch.from_numpy(norms).float().cuda() # OpenCV normals
-            flip = torch.tensor([1.0, -1.0, -1.0], device=normals_cv.device)
-            normals_cuda = normals_cv * flip # OpenGL normals
+            normals_cv = torch.from_numpy(norms).float().cuda()
+            normals_gl = normals_cv * torch.tensor([1., -1., 1.],
+                                                  device=normals_cv.device)
 
-            R_local2world = self.batch_gaussian_rotation(normals_cuda)
-            R_world2local = R_local2world.transpose(1,2)
-            # returns (N,4) in (x,y,z,w) order
-            q_xyzw = self.batch_matrix_to_quaternion(R_world2local)
-            # invert it (since you want world→local)
-            # note: for unit‐quats, inv(q) = conj(q) = [–x,–y,–z, w]
-            q_inv = torch.stack([
-            -q_xyzw[:,0],  # –x
-            -q_xyzw[:,1],  # –y
-            -q_xyzw[:,2],  # –z
-            q_xyzw[:,3],  #  w
+            # cos(θ) = Z · n = n_z
+            dot = torch.clamp(normals_gl[:, 2], -1.0, 1.0)
+            half_ang = 0.5 * torch.acos(dot)  # (N,)
+
+            # Rotation axis = cross(Z, n) = (-n_y, n_x, 0)
+            axis = torch.stack([
+                -normals_gl[:, 1],
+                normals_gl[:, 0],
+                torch.zeros_like(dot)
             ], dim=1)
+            axis = axis / (axis.norm(dim=1, keepdim=True) + 1e-8)
 
-            # finally reorder into the kernel’s [w,x,y,z]
-            rots = torch.stack([
-            q_inv[:,3],
-            q_inv[:,0],
-            q_inv[:,1],
-            q_inv[:,2],
-            ], dim=1).clone().detach().requires_grad_(True).to("cuda")
+            # Local -> world quaternion [w, x, y, z]
+            sin_h = torch.sin(half_ang).unsqueeze(1)
+            cos_h = torch.cos(half_ang).unsqueeze(1)
+            q_l2w = torch.cat([cos_h, axis * sin_h], dim=1)
+
+            # Handle edge cases, parallel with optical axis
+            eps = 1e-6
+            mask_id = dot > (1 - eps)  # zero rotation
+            mask_pi = dot < (-1 + eps)  # 180° rotation
+            if mask_id.any():
+                q_l2w[mask_id] = torch.tensor([1., 0., 0., 0.], device=q_l2w.device)
+            if mask_pi.any():
+                q_l2w[mask_pi] = torch.tensor([0., 1., 0., 0.], device=q_l2w.device)
+
+            # World -> local and pack [w, x, y, z]
+            rots = torch.cat([q_l2w[:, :1], -q_l2w[:, 1:]], dim=1)  # (N, 4)
+            rots = rots.clone().detach().requires_grad_(True).cuda()
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1
-            normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
+            normals_gl = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
 
         num_points = fused_point_cloud.shape[0]
         opacities = inverse_sigmoid(
             0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
         )
 
-        return fused_point_cloud, features, scales, rots, opacities, normals_cuda
-
-    @staticmethod
-    def batch_gaussian_rotation(normals: torch.Tensor) -> torch.Tensor:
-        """
-        Given a batch of normals (shape: [N, 3]) in the Gaussian coordinate system,
-        return a batch of 3x3 rotation matrices (shape: [N, 3, 3]) that define
-        Gaussian plane.
-        """
-        # Following GS-LIVO Gaussian rotation initalization
-        # In FAST-LIVO / GS-LIVO, camera optical axis was +x vector
-        # In transformed (GS) coords, optical axis is +z axis
-
-        device = normals.device
-        cam_opt_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-        cam_opt_axis_batch = cam_opt_axis.unsqueeze(0).expand_as(normals)  # (N,3)
-
-        # Basis vector v1: optical axis X normals
-        v1 = torch.cross(cam_opt_axis_batch, normals, dim=1) # (N,3)
-        v1_norm = v1.norm(dim=1, keepdim=True) # (N,1)
-
-        # Handle near-parallel normals where cross product ~0.
-        threshold = 1e-6
-        use_alt = v1_norm < threshold
-        e_alt = torch.tensor([0.0, 1.0, 0.0], device=device).unsqueeze(0)
-        v1_alt = torch.cross(e_alt, normals, dim=1)
-        v1 = torch.where(use_alt, v1_alt, v1) # (N,3)
-        v1 = v1 / (v1.norm(dim=1, keepdim=True) + 1e-6)
-
-        # Basis vector v2: normals x v1
-        v2 = torch.cross(normals, v1, dim=1)
-        v2 = v2 / (v2.norm(dim=1, keepdim=True) + 1e-6)
-
-        # Basis vector v3: normals
-        v3 = normals / (normals.norm(dim=1, keepdim=True) + 1e-6)
-
-        R = torch.stack([v1, v2, v3], dim=2) # (N,3,3)
-
-        return R
-
-    @staticmethod
-    @torch.no_grad()
-    def batch_matrix_to_quaternion(R: torch.Tensor) -> torch.Tensor:
-        """
-        Vectorized conversion from rotation matrices [N,3,3]
-        to quaternions [N,4], in (x, y, z, w) format.
-        """
-        N = R.shape[0]
-        quat = torch.empty((N, 4), device=R.device, dtype=R.dtype)
-
-        m00 = R[:, 0, 0]
-        m11 = R[:, 1, 1]
-        m22 = R[:, 2, 2]
-        trace = m00 + m11 + m22
-
-        # Case 1: trace > 0
-        mask_pos = trace > 0.0
-        if mask_pos.any():
-            s = torch.sqrt(trace[mask_pos] + 1.0) * 2.0
-            quat[mask_pos, 3] = 0.25 * s              # w
-            quat[mask_pos, 0] = (R[mask_pos, 2, 1] - R[mask_pos, 1, 2]) / s  # x
-            quat[mask_pos, 1] = (R[mask_pos, 0, 2] - R[mask_pos, 2, 0]) / s  # y
-            quat[mask_pos, 2] = (R[mask_pos, 1, 0] - R[mask_pos, 0, 1]) / s  # z
-
-        # Case 2: m00 is largest
-        mask_0 = (R[:, 0, 0] >= R[:, 1, 1]) & (R[:, 0, 0] >= R[:, 2, 2]) & (~mask_pos)
-        if mask_0.any():
-            s = torch.sqrt(1.0 + R[mask_0, 0, 0] - R[mask_0, 1, 1] - R[mask_0, 2, 2]) * 2.0
-            quat[mask_0, 0] = 0.25 * s               # x
-            quat[mask_0, 3] = (R[mask_0, 2, 1] - R[mask_0, 1, 2]) / s
-            quat[mask_0, 1] = (R[mask_0, 0, 1] + R[mask_0, 1, 0]) / s
-            quat[mask_0, 2] = (R[mask_0, 0, 2] + R[mask_0, 2, 0]) / s
-
-        # Case 3: m11 is largest
-        mask_1 = (R[:, 1, 1] >= R[:, 0, 0]) & (R[:, 1, 1] >= R[:, 2, 2]) & (~mask_pos) & (~mask_0)
-        if mask_1.any():
-            s = torch.sqrt(1.0 + R[mask_1, 1, 1] - R[mask_1, 0, 0] - R[mask_1, 2, 2]) * 2.0
-            quat[mask_1, 1] = 0.25 * s               # y
-            quat[mask_1, 3] = (R[mask_1, 0, 2] - R[mask_1, 2, 0]) / s
-            quat[mask_1, 0] = (R[mask_1, 0, 1] + R[mask_1, 1, 0]) / s
-            quat[mask_1, 2] = (R[mask_1, 1, 2] + R[mask_1, 2, 1]) / s
-
-        # Case 4: m22 is largest
-        mask_2 = ~(mask_pos | mask_0 | mask_1)
-        if mask_2.any():
-            s = torch.sqrt(1.0 + R[mask_2, 2, 2] - R[mask_2, 0, 0] - R[mask_2, 1, 1]) * 2.0
-            quat[mask_2, 2] = 0.25 * s               # z
-            quat[mask_2, 3] = (R[mask_2, 1, 0] - R[mask_2, 0, 1]) / s
-            quat[mask_2, 0] = (R[mask_2, 0, 2] + R[mask_2, 2, 0]) / s
-            quat[mask_2, 1] = (R[mask_2, 1, 2] + R[mask_2, 2, 1]) / s
-
-        quat = quat / torch.norm(quat, dim=1, keepdim=True)
-
-        return quat
+        return fused_point_cloud, features, scales, rots, opacities, normals_gl
 
     def init_lr(self, spatial_lr_scale):
         self.spatial_lr_scale = spatial_lr_scale
