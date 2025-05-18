@@ -34,24 +34,28 @@ from scipy.spatial.transform import Rotation as R
 from gaussian.scene.global_voxel_map import GlobalVoxelMap, GlobalVoxelSlot
 import time
 
+
 def print_gpu_mem(tag=""):
     torch.cuda.synchronize()
-    alloc   = torch.cuda.memory_allocated()  / 1024**2   # MB
-    reserv  = torch.cuda.memory_reserved()  / 1024**2
-    peak    = torch.cuda.max_memory_allocated() / 1024**2
+    alloc = torch.cuda.memory_allocated() / 1024 ** 2  # MB
+    reserv = torch.cuda.memory_reserved() / 1024 ** 2
+    peak = torch.cuda.max_memory_allocated() / 1024 ** 2
     print(f"[{tag}] GPU   alloc {alloc:7.1f} MB | reserved {reserv:7.1f} MB | peak {peak:7.1f} MB")
     torch.cuda.reset_peak_memory_stats()
+
 
 def print_gaussian_counts(gaussians, gvm, tag=""):
     print(f"[{tag}]   active_GPU = {gaussians._xyz.shape[0]:,}"
           f"   | active_keys = {len(gvm.active_keys):,}"
           f"   | total_voxels = {len(gvm.map):,}")
 
+
 def assert_indices_consistent(gaussians, gvm):
     bad = [k for k in gvm.active_keys
            if gvm.map[k].gpu_idx < 0
            or gvm.map[k].gpu_idx >= gaussians._xyz.shape[0]]
     assert not bad, f"Found stale gpu_idx in {len(bad)} voxel-slots"
+
 
 class GaussianModel:
     def __init__(self, sh_degree: int, config=None):
@@ -92,7 +96,7 @@ class GaussianModel:
         self.global_voxel_map = GlobalVoxelMap(config)
 
     def build_covariance_from_scaling_rotation(
-        self, scaling, scaling_modifier, rotation
+            self, scaling, scaling_modifier, rotation
     ):
         L = build_scaling_rotation(scaling_modifier * scaling, rotation)
         actual_covariance = L @ L.transpose(1, 2)
@@ -144,10 +148,10 @@ class GaussianModel:
 
         cloud = mrnp.pointCloudFromPoints(xyz)
         settings = mr.TriangulationHelpersSettings()
-        settings.numNeis = 16 # TODO can tune mesh/search params
+        settings.numNeis = 16  # TODO can tune mesh/search params
         allLocal = mr.buildUnitedLocalTriangulations(cloud, settings)
         cloud.normals = mr.makeUnorientedNormals(
-            cloud, 
+            cloud,
             allLocal,
             orient=mr.OrientNormals.TowardOrigin)
 
@@ -159,23 +163,23 @@ class GaussianModel:
         keys, inv = np.unique(
             np.floor(new_xyz / voxel_size).astype(int),
             axis=0, return_inverse=True)
-        
+
         M = keys.shape[0]
-        counts = np.bincount(inv, minlength=M).astype(np.float32) # (M,)
+        counts = np.bincount(inv, minlength=M).astype(np.float32)  # (M,)
 
         # Sum up xyz, rgb, normals per voxel
-        centroids = np.zeros((M,3), dtype=np.float32)
-        colors = np.zeros((M,3), dtype=np.float32)
-        norms = np.zeros((M,3), dtype=np.float32)
+        centroids = np.zeros((M, 3), dtype=np.float32)
+        colors = np.zeros((M, 3), dtype=np.float32)
+        norms = np.zeros((M, 3), dtype=np.float32)
         np.add.at(centroids, inv, new_xyz)
         np.add.at(colors, inv, new_rgb)
         np.add.at(norms, inv, new_normals)
 
         # Normalize to get mean & unit normals
-        centroids /= counts[:,None]
-        colors /= counts[:,None]
+        centroids /= counts[:, None]
+        colors /= counts[:, None]
         norms /= (np.linalg.norm(norms, axis=1, keepdims=True) + 1e-8)
-       
+
         pcd = BasicPointCloud(points=centroids, colors=colors, normals=norms)
         self.ply_input = pcd
 
@@ -190,128 +194,62 @@ class GaussianModel:
         features[:, 3:, 1:] = 0.0
 
         # Initialize scales using voxel size and thin s_delta
-        s_xy = torch.full((M,), voxel_size,  device="cuda") # tangent extents
-        s_delta = torch.full_like(s_xy, 0.01) # 1 cm slice
-        scales = torch.stack([s_xy, s_xy, s_delta], dim=-1) # (M,3)
+        s_xy = torch.full((M,), voxel_size, device="cuda")  # tangent extents
+        s_delta = torch.full_like(s_xy, 0.01)  # 1 cm slice
+        scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)  # (M,3)
         scales = torch.log(scales)
 
         if self.config["Training"]["rotation_init"]:
-            # For normal supervision:
-            normals_cuda = torch.from_numpy(norms).float().cuda()
+            normals_cv = torch.from_numpy(norms).float().cuda()
+            normals_gl = normals_cv * torch.tensor([1., -1., 1.],
+                                                   device=normals_cv.device)
 
-            normal_rot_mats = self.batch_gaussian_rotation(normals_cuda)
-            normal_quats = self.batch_matrix_to_quaternion(normal_rot_mats)
-            rots = normal_quats.clone().detach().requires_grad_(True).to("cuda")
+            # cos(θ) = Z · n = n_z
+            dot = torch.clamp(normals_gl[:, 2], -1.0, 1.0)
+            half_ang = 0.5 * torch.acos(dot)  # (N,)
+
+            # Rotation axis = cross(Z, n) = (-n_y, n_x, 0)
+            axis = torch.stack([
+                -normals_gl[:, 1],
+                normals_gl[:, 0],
+                torch.zeros_like(dot)
+            ], dim=1)
+            axis = axis / (axis.norm(dim=1, keepdim=True) + 1e-8)
+
+            # Local -> world quaternion [w, x, y, z]
+            sin_h = torch.sin(half_ang).unsqueeze(1)
+            cos_h = torch.cos(half_ang).unsqueeze(1)
+            q_l2w = torch.cat([cos_h, axis * sin_h], dim=1)
+
+            # Handle edge cases, parallel with optical axis
+            eps = 1e-6
+            mask_id = dot > (1 - eps)  # zero rotation
+            mask_pi = dot < (-1 + eps)  # 180° rotation
+            if mask_id.any():
+                q_l2w[mask_id] = torch.tensor([1., 0., 0., 0.], device=q_l2w.device)
+            if mask_pi.any():
+                q_l2w[mask_pi] = torch.tensor([0., 1., 0., 0.], device=q_l2w.device)
+
+            # World -> local and pack [w, x, y, z]
+            rots = torch.cat([q_l2w[:, :1], -q_l2w[:, 1:]], dim=1)  # (N, 4)
+            rots = rots.clone().detach().requires_grad_(True).cuda()
         else:
             rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             rots[:, 0] = 1
-            normals_cuda = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
+            normals_gl = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
 
         num_points = fused_point_cloud.shape[0]
         opacities = inverse_sigmoid(
             0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
         )
 
-        return fused_point_cloud, features, scales, rots, opacities, normals_cuda, keys
-
-    @staticmethod
-    def batch_gaussian_rotation(normals: torch.Tensor) -> torch.Tensor:
-        """
-        Given a batch of normals (shape: [N, 3]) in the Gaussian coordinate system,
-        return a batch of 3x3 rotation matrices (shape: [N, 3, 3]) that define
-        Gaussian plane.
-        """
-        # Following GS-LIVO Gaussian rotation initalization
-        # In FAST-LIVO / GS-LIVO, camera optical axis was +x vector
-        # In transformed (GS) coords, optical axis is +z axis
-
-        device = normals.device
-        cam_opt_axis = torch.tensor([0.0, 0.0, 1.0], device=device)
-        cam_opt_axis_batch = cam_opt_axis.unsqueeze(0).expand_as(normals)  # (N,3)
-
-        # Basis vector v1: optical axis X normals
-        v1 = torch.cross(cam_opt_axis_batch, normals, dim=1) # (N,3)
-        v1_norm = v1.norm(dim=1, keepdim=True) # (N,1)
-
-        # Handle near-parallel normals where cross product ~0.
-        threshold = 1e-6
-        use_alt = v1_norm < threshold
-        e_alt = torch.tensor([0.0, 1.0, 0.0], device=device).unsqueeze(0)
-        v1_alt = torch.cross(e_alt, normals, dim=1)
-        v1 = torch.where(use_alt, v1_alt, v1) # (N,3)
-        v1 = v1 / (v1.norm(dim=1, keepdim=True) + 1e-6)
-
-        # Basis vector v2: normals x v1
-        v2 = torch.cross(normals, v1, dim=1)
-        v2 = v2 / (v2.norm(dim=1, keepdim=True) + 1e-6)
-
-        # Basis vector v3: normals
-        v3 = normals / (normals.norm(dim=1, keepdim=True) + 1e-6)
-
-        R = torch.stack([v1, v2, v3], dim=2) # (N,3,3)
-
-        return R
-
-    @staticmethod
-    @torch.no_grad()
-    def batch_matrix_to_quaternion(R: torch.Tensor) -> torch.Tensor:
-        """
-        Vectorized conversion from rotation matrices [N,3,3]
-        to quaternions [N,4], in (x, y, z, w) format.
-        """
-        N = R.shape[0]
-        quat = torch.empty((N, 4), device=R.device, dtype=R.dtype)
-
-        m00 = R[:, 0, 0]
-        m11 = R[:, 1, 1]
-        m22 = R[:, 2, 2]
-        trace = m00 + m11 + m22
-
-        # Case 1: trace > 0
-        mask_pos = trace > 0.0
-        if mask_pos.any():
-            s = torch.sqrt(trace[mask_pos] + 1.0) * 2.0
-            quat[mask_pos, 3] = 0.25 * s  # w
-            quat[mask_pos, 0] = (R[mask_pos, 2, 1] - R[mask_pos, 1, 2]) / s  # x
-            quat[mask_pos, 1] = (R[mask_pos, 0, 2] - R[mask_pos, 2, 0]) / s  # y
-            quat[mask_pos, 2] = (R[mask_pos, 1, 0] - R[mask_pos, 0, 1]) / s  # z
-
-        # Case 2: m00 is largest
-        mask_0 = (R[:, 0, 0] >= R[:, 1, 1]) & (R[:, 0, 0] >= R[:, 2, 2]) & (~mask_pos)
-        if mask_0.any():
-            s = torch.sqrt(1.0 + R[mask_0, 0, 0] - R[mask_0, 1, 1] - R[mask_0, 2, 2]) * 2.0
-            quat[mask_0, 0] = 0.25 * s  # x
-            quat[mask_0, 3] = (R[mask_0, 2, 1] - R[mask_0, 1, 2]) / s
-            quat[mask_0, 1] = (R[mask_0, 0, 1] + R[mask_0, 1, 0]) / s
-            quat[mask_0, 2] = (R[mask_0, 0, 2] + R[mask_0, 2, 0]) / s
-
-        # Case 3: m11 is largest
-        mask_1 = (R[:, 1, 1] >= R[:, 0, 0]) & (R[:, 1, 1] >= R[:, 2, 2]) & (~mask_pos) & (~mask_0)
-        if mask_1.any():
-            s = torch.sqrt(1.0 + R[mask_1, 1, 1] - R[mask_1, 0, 0] - R[mask_1, 2, 2]) * 2.0
-            quat[mask_1, 1] = 0.25 * s  # y
-            quat[mask_1, 3] = (R[mask_1, 0, 2] - R[mask_1, 2, 0]) / s
-            quat[mask_1, 0] = (R[mask_1, 0, 1] + R[mask_1, 1, 0]) / s
-            quat[mask_1, 2] = (R[mask_1, 1, 2] + R[mask_1, 2, 1]) / s
-
-        # Case 4: m22 is largest
-        mask_2 = ~(mask_pos | mask_0 | mask_1)
-        if mask_2.any():
-            s = torch.sqrt(1.0 + R[mask_2, 2, 2] - R[mask_2, 0, 0] - R[mask_2, 1, 1]) * 2.0
-            quat[mask_2, 2] = 0.25 * s  # z
-            quat[mask_2, 3] = (R[mask_2, 1, 0] - R[mask_2, 0, 1]) / s
-            quat[mask_2, 0] = (R[mask_2, 0, 2] + R[mask_2, 2, 0]) / s
-            quat[mask_2, 1] = (R[mask_2, 1, 2] + R[mask_2, 2, 1]) / s
-
-        quat = quat / torch.norm(quat, dim=1, keepdim=True)
-
-        return quat
+        return fused_point_cloud, features, scales, rots, opacities, normals_gl, keys
 
     def init_lr(self, spatial_lr_scale):
         self.spatial_lr_scale = spatial_lr_scale
 
     def extend_from_pcd(
-        self, fused_point_cloud, features, scales, rots, opacities, normals, kf_id
+            self, fused_point_cloud, features, scales, rots, opacities, normals, kf_id
     ):
         new_xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         new_features_dc = nn.Parameter(
@@ -323,7 +261,7 @@ class GaussianModel:
         new_scaling = nn.Parameter(scales.requires_grad_(True))
         new_rotation = nn.Parameter(rots.requires_grad_(True))
         new_opacity = nn.Parameter(opacities.requires_grad_(True))
-        new_normals = normals.detach() # TODO check plain Tensor, no Autograd
+        new_normals = normals.detach()  # TODO check plain Tensor, no Autograd
 
         new_unique_kfIDs = torch.ones((new_xyz.shape[0])).int() * kf_id
         new_n_obs = torch.zeros((new_xyz.shape[0])).int()
@@ -340,7 +278,7 @@ class GaussianModel:
         )
 
     def extend_from_pcd_seq(
-        self, cam_info, kf_id=-1, init=False, scale=2.0, depthmap=None
+            self, cam_info, kf_id=-1, init=False, scale=2.0, depthmap=None
     ):
         fused_point_cloud, features, scales, rots, opacities = (
             self.create_pcd_from_image(cam_info, init, scale=scale, depthmap=depthmap)
@@ -365,13 +303,14 @@ class GaussianModel:
 
         t1 = time.perf_counter()
 
-        keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals, keys) # TODO Set gaussian params per point here?
-        
+        keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals,
+                                            keys)  # TODO Set gaussian params per point here?
+
         t2 = time.perf_counter()
-        
+
         # Get keys to add/remove from GPU
         to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, keys_to_init)
-        
+
         t3 = time.perf_counter()
 
         if to_remove:
@@ -388,23 +327,23 @@ class GaussianModel:
 
         t5 = time.perf_counter()
 
-        # TODO remove later, assert gaussians live either in cuda 
+        # TODO remove later, assert gaussians live either in cuda
         # tensor AND active_keys or in CPU map w/ gpu_idx=-1
         assert all(
-                (slot.gpu_idx == -1) == (key not in gvm.active_keys)
-                for key, slot in gvm.map.items()
-            ), "Inconsistent gpu_idx in slots"
+            (slot.gpu_idx == -1) == (key not in gvm.active_keys)
+            for key, slot in gvm.map.items()
+        ), "Inconsistent gpu_idx in slots"
         assert self._xyz.shape[0] == len(gvm.active_keys), \
             f"GPU size {self._xyz.shape[0]} != active_keys size {len(gvm.active_keys)}"
-        
+
         t6 = time.perf_counter()
 
-        print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
-                f"insert={(t2-t1)*1e3:.1f}, "
-                f"cull={(t3-t2)*1e3:.1f}, "
-                f"gpu_remove={(t4-t3)*1e3:.1f}, "
-                f"gpu_add={(t5-t4)*1e3:.1f}, "
-                f"assert={(t6-t5)*1e3:.1f}")
+        print(f"Timing (ms): gen={(t1 - t0) * 1e3:.1f}, "
+              f"insert={(t2 - t1) * 1e3:.1f}, "
+              f"cull={(t3 - t2) * 1e3:.1f}, "
+              f"gpu_remove={(t4 - t3) * 1e3:.1f}, "
+              f"gpu_add={(t5 - t4) * 1e3:.1f}, "
+              f"assert={(t6 - t5) * 1e3:.1f}")
 
     @torch.no_grad()
     def _gpu_add_active_gaussians(self, gvm, keys, kf_id):
@@ -415,22 +354,22 @@ class GaussianModel:
         if not slots:
             print("No new voxels to activate on GPU")
             return
-        
+
         def cat(field, requires_grad=True):
             arr = np.stack([slot.cpu_params[field] for slot in slots], axis=0)
             t = torch.from_numpy(arr).to("cuda").requires_grad_(requires_grad)
             return t
-        
+
         new_xyz = nn.Parameter(cat("xyz"))
-        new_f_dc = nn.Parameter(cat("f_dc").unsqueeze(1)) # (N,1,3)
-        new_f_rest = nn.Parameter(cat("f_rest").transpose(1, 2).contiguous()) # (N,SH-1,3)
+        new_f_dc = nn.Parameter(cat("f_dc").unsqueeze(1))  # (N,1,3)
+        new_f_rest = nn.Parameter(cat("f_rest").transpose(1, 2).contiguous())  # (N,SH-1,3)
         new_opacity = nn.Parameter(cat("opacity"))
         new_scaling = nn.Parameter(cat("scaling"))
         new_rot = nn.Parameter(cat("rotation"))
-        new_normals = torch.stack([torch.as_tensor(s.cpu_params["normals"], 
-                                                   dtype=torch.float32, device="cuda") 
-                                                   for s in slots], dim=0)
-        
+        new_normals = torch.stack([torch.as_tensor(s.cpu_params["normals"],
+                                                   dtype=torch.float32, device="cuda")
+                                   for s in slots], dim=0)
+
         # Push onto optimizer
         self.densification_postfix(
             new_xyz,
@@ -458,7 +397,7 @@ class GaussianModel:
         """
         Copy optimized params from GPU back into CPU voxel, compact, update active_keys.
         """
-        N = self._xyz.shape[0] # Total rows currently on GPU
+        N = self._xyz.shape[0]  # Total rows currently on GPU
 
         # Gather candidate drop indices, clamp to valid range
         raw_idx = [gvm.map[k].gpu_idx for k in keys_to_remove]
@@ -466,36 +405,36 @@ class GaussianModel:
         stale = set(raw_idx) - set(drop_idx)
         if stale:
             print(f"[DEBUG] Found {len(stale)} stale gpu_idx in {len(raw_idx)} slots")
-        
+
         keep_mask = torch.ones(N, dtype=torch.bool, device=self._xyz.device)
         keep_mask[drop_idx] = False
 
         idx2key = {gvm.map[k].gpu_idx: k for k in keys_to_remove
                    if 0 <= gvm.map[k].gpu_idx < N}
-        
+
         drop_idx_tensor = torch.tensor(drop_idx, dtype=torch.long, device=self._xyz.device)
-        xyz = self._xyz[drop_idx_tensor].cpu().numpy()    # (D,3)
-        f_dc = self._features_dc[drop_idx_tensor,:,0].cpu().numpy()  # (D,C)
-        f_rest = self._features_rest[drop_idx_tensor].cpu().numpy()    # (D,…)
-        opacity = self._opacity[drop_idx_tensor].cpu().numpy()      # (D,1)
-        scaling = self._scaling[drop_idx_tensor].cpu().numpy()      # (D,3)
-        rot = self._rotation[drop_idx_tensor].cpu().numpy()      # (D,4)
-        normals = self.normals[drop_idx_tensor].cpu().numpy()      # (D,3)
+        xyz = self._xyz[drop_idx_tensor].cpu().numpy()  # (D,3)
+        f_dc = self._features_dc[drop_idx_tensor, :, 0].cpu().numpy()  # (D,C)
+        f_rest = self._features_rest[drop_idx_tensor].cpu().numpy()  # (D,…)
+        opacity = self._opacity[drop_idx_tensor].cpu().numpy()  # (D,1)
+        scaling = self._scaling[drop_idx_tensor].cpu().numpy()  # (D,3)
+        rot = self._rotation[drop_idx_tensor].cpu().numpy()  # (D,4)
+        normals = self.normals[drop_idx_tensor].cpu().numpy()  # (D,3)
 
         for i, idx in enumerate(drop_idx):
             key = idx2key[idx]
             # Write params to CPU and mark "not on GPU"
             gvm.cuda_params_to_voxel(key, {
-                "xyz":     xyz[i],
-                "f_dc":    f_dc[i],
-                "f_rest":  f_rest[i],
+                "xyz": xyz[i],
+                "f_dc": f_dc[i],
+                "f_rest": f_rest[i],
                 "opacity": opacity[i],
                 "scaling": scaling[i],
-                "rotation":rot[i],
-                "normals":normals[i],
+                "rotation": rot[i],
+                "normals": normals[i],
             })
             gvm.map[key].gpu_idx = -1
-        
+
         # Drop rows from GPU tensors, can maybe be optimized w/ swap+pop
         self.prune_points(~keep_mask)
 
@@ -513,11 +452,10 @@ class GaussianModel:
             new = remap.get(old, -1)
             slot.gpu_idx = new
             if new < 0:
-                stale_count += 1 
+                stale_count += 1
         print(f"[WARNING] Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots")
 
         gvm.active_keys.difference_update(keys_to_remove)
-
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -570,7 +508,7 @@ class GaussianModel:
                     iteration,
                     lr_init=self.lr_init,
                     lr_final=self.lr_final,
-                    max_steps=self.max_steps+1000,
+                    max_steps=self.max_steps + 1000,
                 )
 
                 param_group["lr"] = lr
@@ -632,7 +570,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
 
     def reset_opacity_nonvisible(
-        self, visibility_filters
+            self, visibility_filters
     ):  ##Reset opacity for only non-visible gaussians
         opacities_new = inverse_sigmoid(torch.ones_like(self.get_opacity) * 0.4)
 
@@ -688,7 +626,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
-        self.normals   = self.normals[valid_points_mask]
+        self.normals = self.normals[valid_points_mask]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -732,16 +670,16 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(
-        self,
-        new_xyz,
-        new_features_dc,
-        new_features_rest,
-        new_opacities,
-        new_scaling,
-        new_rotation,
-        new_normals=None,
-        new_kf_ids=None,
-        new_n_obs=None,
+            self,
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacities,
+            new_scaling,
+            new_rotation,
+            new_normals=None,
+            new_kf_ids=None,
+            new_n_obs=None,
     ):
         d = {
             "xyz": new_xyz,
@@ -863,7 +801,8 @@ class GaussianModel:
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
 
-        prune_mask = torch.logical_and((self.get_opacity < min_opacity).squeeze(), (self.unique_kfIDs != self.unique_kfIDs.max()).cuda())
+        prune_mask = torch.logical_and((self.get_opacity < min_opacity).squeeze(),
+                                       (self.unique_kfIDs != self.unique_kfIDs.max()).cuda())
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
