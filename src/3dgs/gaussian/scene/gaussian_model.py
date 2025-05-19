@@ -138,37 +138,11 @@ class GaussianModel:
             cloud, 
             allLocal,
             orient=mr.OrientNormals.TowardOrigin)
-
-        new_xyz = xyz
-        new_rgb = rgb
         new_normals = mrnp.toNumpyArray(cloud.normals)
 
-        keys, inv = np.unique(
-            np.floor(new_xyz / voxel_size).astype(int),
-            axis=0, return_inverse=True)
-        
-        M = keys.shape[0]
-        # Counts per voxel
-        counts = np.bincount(inv, minlength=M).astype(np.float32) # (M,)
-
-        # Sum up xyz, rgb, normals per voxel
-        centroids = np.zeros((M,3), dtype=np.float32)
-        colors = np.zeros((M,3), dtype=np.float32)
-        norms = np.zeros((M,3), dtype=np.float32)
-        np.add.at(centroids, inv, new_xyz)
-        np.add.at(colors, inv, new_rgb)
-        np.add.at(norms, inv, new_normals)
-
-        # Normalize to get mean & unit normals
-        centroids /= counts[:,None]
-        colors /= counts[:,None]
-        norms /= (np.linalg.norm(norms, axis=1, keepdims=True) + 1e-8)
-       
-        pcd = BasicPointCloud(points=centroids, colors=colors, normals=norms)
-        self.ply_input = pcd
-
-        fused_point_cloud = torch.from_numpy(centroids).float().cuda()
-        fused_color = RGB2SH(torch.from_numpy(colors).float().cuda())
+        M = xyz.shape[0]
+        fused_point_cloud = torch.from_numpy(xyz).float().cuda()
+        fused_color = RGB2SH(torch.from_numpy(rgb).float().cuda())
 
         features = torch.zeros(
             (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
@@ -184,7 +158,7 @@ class GaussianModel:
         scales = torch.log(scales)
 
         if self.config["Training"]["rotation_init"]:
-            normals_cv = torch.from_numpy(norms).float().cuda()
+            normals_cv = torch.from_numpy(new_normals).float().cuda()
             normals_gl = normals_cv * torch.tensor([1., -1., 1.],
                                                   device=normals_cv.device)
 
@@ -274,6 +248,7 @@ class GaussianModel:
     def extend_from_lidar_seq(
             self, cam_info, kf_id=-1, init=False, pcd=None
     ):
+        print(f'\n[DEBUG] New incoming lidar scan with {pcd.shape[0]} points')
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
 
@@ -285,37 +260,16 @@ class GaussianModel:
 
         t1 = time.perf_counter()
 
-        # Compute voxel spatial keys
-        pts_np = fused_point_cloud.cpu().numpy() # (M,3)
-        keys = np.floor(pts_np / self.global_voxel_map.voxel_size).astype(np.int32) # (M,3)
+        pts_np = fused_point_cloud.cpu().numpy()
+        mask_np = self.global_voxel_map.get_scan_points_to_init(pts_np)
+        n_init = int(mask_np.sum())
+        print(f"[DEBUG] Initialising {n_init} gaussians (filtered {xyz.shape[0] - n_init})")
 
-        # Find voxels that are not full (mask_np)
-        default_slot = GlobalVoxelSlot()
-        counts = np.fromiter(
-            ( self.global_voxel_map.map.get(tuple(k), default_slot).count
-            for k in keys ),
-            dtype=np.int32,
-            count=keys.shape[0]
-        )
-        mask_np = counts < self.global_voxel_map.max_points_per_voxel
-        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device)
-        
         t2 = time.perf_counter()
-
-        # Insert map points in only under-filled voxels
-        new_pts = pts_np[mask_np]
-        keys_to_init = self.global_voxel_map.insert_points(new_pts)
-
-        t3 = time.perf_counter()
-
-        # Frustum-cull & update sliding-window with only the new keys
-        planes = cam_info.frustum_planes.cpu().numpy()
-        self.global_voxel_map.update_active_gaussians(planes, keys_to_init)
-        
-        t4 = time.perf_counter()
-
+                
         # Filter full scan mask, pass along only new 
         # points in voxel space that are not full
+        mask = torch.from_numpy(mask_np).to(device=fused_point_cloud.device)
         fused_point_cloud = fused_point_cloud[mask]
         features = features[mask]
         scales = scales[mask]
@@ -323,20 +277,31 @@ class GaussianModel:
         opacities = opacities[mask]
         normals = normals[mask]
 
-        t5 = time.perf_counter()
-
         self.extend_from_pcd(
             fused_point_cloud, features, scales, rots, opacities, normals, kf_id
         )
 
-        t6 = time.perf_counter()
+        t3 = time.perf_counter()
+
+        self.global_voxel_map.update_voxel_occupancy(pts_np[mask_np])
+
+        t4 = time.perf_counter()
 
         print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
-            f"fullness={(t2-t1)*1e3:.1f}, "
-            f"insert={(t3-t2)*1e3:.1f}, "
-            f"cull={(t4-t3)*1e3:.1f}, "
-            f"filter={(t5-t4)*1e3:.1f}, "
-            f"extend={(t6-t5)*1e3:.1f}")
+                f"check voxels={(t2-t1)*1e3:.1f}, "
+                f"extend pcd={(t3-t2)*1e3:.1f}, "
+                f"update voxels={(t4-t3)*1e3:.1f}")
+        
+        # Add to ply file
+        if mask_np.any():
+            try:
+                self.ply_input = BasicPointCloud(
+                    points=fused_point_cloud.detach().cpu().numpy(),
+                    colors=rgb[mask_np],
+                    normals=normals.detach().cpu().numpy(),
+                )
+            except Exception:
+                self.ply_input = None
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
