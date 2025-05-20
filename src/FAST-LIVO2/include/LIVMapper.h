@@ -62,6 +62,10 @@ public:
   template <typename T> Eigen::Matrix<T, 3, 1> pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &pi);
   cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg);
 
+  void publish_frame_world(const ros::Publisher&, VIOManagerPtr, const ros::Time&);
+  void publish_img_rgb   (const image_transport::Publisher&, VIOManagerPtr, const ros::Time&);
+  void publish_odometry  (const ros::Publisher&, const ros::Time&);
+
   std::mutex mtx_buffer, mtx_buffer_imu_prop;
   std::condition_variable sig_buffer;
 
