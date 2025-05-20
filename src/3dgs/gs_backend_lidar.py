@@ -76,25 +76,6 @@ class GSBackEnd(mp.Process):
             self.projection_matrix = getProjectionMatrix2(znear=0.01, zfar=100.0, fx=K[0], fy=K[1], cx=K[2], cy=K[3],
                                                           W=W, H=H).transpose(0, 1).cuda()
 
-        # if packet['pose_updates'] is not None:
-        #     with torch.no_grad():
-        #         tstamps = packet['tstamp']
-        #         indices = (tstamps.unsqueeze(1) == self.gaussians.unique_kfIDs.unsqueeze(0)).nonzero()[:, 0]
-        #         updates = packet['pose_updates'].cuda()[indices]
-        #         updates_scale = packet['scale_updates'].cuda()[indices]
-        #
-        #         xyz = self.gaussians.get_xyz
-        #         xyz = (updates * xyz) / updates_scale
-        #         self.gaussians._xyz[:] = xyz
-        #
-        #         scale = self.gaussians.get_scaling
-        #         scale = scale / updates_scale
-        #         self.gaussians._scaling[:] = self.gaussians.scaling_inverse_activation(scale)
-        #
-        #         rot = SO3(self.gaussians.get_rotation)
-        #         rot = SO3(updates.data[:, 3:]) * rot
-        #         self.gaussians._rotation[:] = rot.data
-
         w2c = SE3(packet["poses"]).matrix().cuda()
         for i, idx in enumerate(packet['viz_idx']):
             idx = idx.item()
@@ -117,12 +98,13 @@ class GSBackEnd(mp.Process):
                 else:
                     self.viewpoints[idx] = viewpoint
 
-        self.map(self.current_window, iters=100)
+        self.map(self.current_window, iters=10)
 
         if self.use_gui:
             keyframes = [self.viewpoints[kf_idx] for kf_idx in self.current_window]
             current_window_dict = {}
-            current_window_dict[self.current_window[0]] = self.current_window[1:]
+            if self.current_window:
+                current_window_dict[self.current_window[0]] = self.current_window[1:]
             self.q_main2vis.put(
                 gui_utils.GaussianPacket(
                     gaussians=clone_obj(self.gaussians),
