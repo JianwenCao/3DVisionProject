@@ -394,6 +394,20 @@ def visualize_reprojection(data_folder):
     ax_err_pct = fig.add_subplot(gs[1, 0])
     ax_err_total = fig.add_subplot(gs[1, 1])
 
+    def distort_points(x, y, k1, k2, p1, p2):
+        """
+        Apply radial-tangential distortion (Brown–Conrady) to normalized coords.
+        x, y … 1-D numpy arrays  (unit: focal-length = 1)
+        returns x_d, y_d
+        """
+        r2 = x**2 + y**2
+        radial = 1.0 + k1 * r2 + k2 * r2**2
+        x_radial = x * radial
+        y_radial = y * radial
+        x_tangential = 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x**2)
+        y_tangential = p1 * (r2 + 2.0 * y**2) + 2.0 * p2 * x * y
+        return x_radial + x_tangential, y_radial + y_tangential
+
     def update_display():
         frame = frame_dirs[current_idx[0]]
         img_path = os.path.join(data_folder, frame, "image.png")
@@ -458,10 +472,20 @@ def visualize_reprojection(data_folder):
         errs = np.linalg.norm(world_hom_rt[:,:3] - orig_xyz, axis=1)
         print(f"Frame {frame}: round‑trip mean error = {errs.mean():.6f} m, max = {errs.max():.6f} m")
 
-        # Pin-hole projection:
+        # ---------------------------------------------------------------------------------------------
         X, Y, Z = cam_coords_gs_valid[:, 0], cam_coords_gs_valid[:, 1], cam_coords_gs_valid[:, 2]
-        u = fx * (X / Z) + cx
-        v = fy * (Y / Z) + cy
+        # Pin-hole projection:
+        # u = fx * (X / Z) + cx
+        # v = fy * (Y / Z) + cy
+
+        # WITH distortion:
+        x_n = X / Z
+        y_n = Y / Z
+        k1, k2, p1, p2 = -0.076160, 0.123001, -0.00113, 0.000251   # from FASTLIVO camera_pinhole.yaml
+        x_d, y_d = distort_points(x_n, y_n, k1, k2, p1, p2)
+        u = fx * x_d + cx
+        v = fy * y_d + cy
+        # ---------------------------------------------------------------------------------------------
 
         # Compute error metrics:
         out_of_bounds = ((u < 0) | (u > W) | (v < 0) | (v > H))

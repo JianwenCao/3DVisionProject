@@ -320,31 +320,19 @@ void LIVMapper::handleVIO()
   // }
 
   // Check if enough new voxels initialized in the last UpdateVoxelMap to trigger publishing for Gaussian Splatting
-  if (!gs_en) {
-    const ros::Time sync_stamp = ros::Time().fromSec(LidarMeasures.last_lio_update_time);
-
-    publish_frame_world(pubLaserCloudFullRes, vio_manager, sync_stamp);
-    publish_img_rgb   (pubImage, vio_manager, sync_stamp);
-    publish_odometry  (pubOdomAftMapped, sync_stamp);
-    
-    // publish_frame_world(pubLaserCloudFullRes, vio_manager);
-    // publish_img_rgb(pubImage, vio_manager);
-    // publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
+  if (!gs_en) {    
+    publish_frame_world(pubLaserCloudFullRes, vio_manager);
+    publish_img_rgb(pubImage, vio_manager);
+    publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
   }
   else {
     if (voxelmap_manager->gs_publish_next_) {
       std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
       std::cout << "\033[1;35m|  Publish for GS, new_voxel_count > threshold  |\033[0m\n";
       std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
-      const ros::Time sync_stamp = ros::Time().fromSec(LidarMeasures.last_lio_update_time);
-
-      publish_frame_world(pubLaserCloudFullRes, vio_manager, sync_stamp);
-      publish_img_rgb   (pubImage, vio_manager, sync_stamp);
-      publish_odometry  (pubOdomAftMapped, sync_stamp);
-
-      // publish_frame_world(pubLaserCloudFullRes, vio_manager);
-      // publish_img_rgb(pubImage, vio_manager);
-      // publish_odometry(pubOdomAftMapped);
+      publish_frame_world(pubLaserCloudFullRes, vio_manager);
+      publish_img_rgb(pubImage, vio_manager);
+      publish_odometry(pubOdomAftMapped);
       voxelmap_manager->gs_publish_next_ = false;
     }
   }
@@ -1128,18 +1116,18 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
   ROS_ERROR("out sync");
 }
 
-void LIVMapper::publish_img_rgb(const image_transport::Publisher &pubImage, VIOManagerPtr vio_manager, const ros::Time& stamp)
+void LIVMapper::publish_img_rgb(const image_transport::Publisher &pubImage, VIOManagerPtr vio_manager)
 {
   cv::Mat img_rgb = vio_manager->img_cp;
   cv_bridge::CvImage out_msg;
-  out_msg.header.stamp = stamp;
+  out_msg.header.stamp = ros::Time::now();
   // out_msg.header.frame_id = "camera_init";
   out_msg.encoding = sensor_msgs::image_encodings::BGR8;
   out_msg.image = img_rgb;
   pubImage.publish(out_msg.toImageMsg());
 }
 
-void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, VIOManagerPtr vio_manager, const ros::Time& stamp)
+void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, VIOManagerPtr vio_manager)
 {
   if (pcl_w_wait_pub->empty()) return;
   PointCloudXYZRGB::Ptr laserCloudWorldRGB(new PointCloudXYZRGB());
@@ -1199,7 +1187,7 @@ void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, 
   { 
     pcl::toROSMsg(*pcl_w_wait_pub, laserCloudmsg); 
   }
-  laserCloudmsg.header.stamp = stamp;
+  laserCloudmsg.header.stamp = ros::Time::now();
   laserCloudmsg.header.frame_id = "camera_init";
   pubLaserCloudFullRes.publish(laserCloudmsg);
 
@@ -1251,12 +1239,6 @@ void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, 
   PointCloudXYZI().swap(*pcl_w_wait_pub);
 }
 
-void LIVMapper::publish_frame_world(const ros::Publisher &pub,
-  VIOManagerPtr vio)
-{
-publish_frame_world(pub, vio, ros::Time::now());
-}
-
 void LIVMapper::publish_visual_sub_map(const ros::Publisher &pubSubVisualMap)
 {
   PointCloudXYZI::Ptr laserCloudFullRes(visual_sub_map);
@@ -1301,11 +1283,11 @@ template <typename T> void LIVMapper::set_posestamp(T &out)
   out.orientation.w = geoQuat.w;
 }
 
-void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped, const ros::Time& stamp)
+void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
 {
   odomAftMapped.header.frame_id = "camera_init";
   odomAftMapped.child_frame_id = "aft_mapped";
-  odomAftMapped.header.stamp = stamp;
+  odomAftMapped.header.stamp = ros::Time::now();
   set_posestamp(odomAftMapped.pose.pose);
 
   static tf::TransformBroadcaster br;
@@ -1319,11 +1301,6 @@ void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped, const r
   transform.setRotation(q);
   br.sendTransform( tf::StampedTransform(transform, odomAftMapped.header.stamp, "camera_init", "aft_mapped") );
   pubOdomAftMapped.publish(odomAftMapped);
-}
-
-void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
-{
-  publish_odometry(pubOdomAftMapped, ros::Time::now());
 }
 
 void LIVMapper::publish_mavros(const ros::Publisher &mavros_pose_publisher)
