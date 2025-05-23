@@ -320,7 +320,7 @@ void LIVMapper::handleVIO()
   // }
 
   // Check if enough new voxels initialized in the last UpdateVoxelMap to trigger publishing for Gaussian Splatting
-  if (!gs_en) {    
+  if (!gs_en) {
     publish_frame_world(pubLaserCloudFullRes, vio_manager);
     publish_img_rgb(pubImage, vio_manager);
     publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
@@ -416,7 +416,7 @@ void LIVMapper::handleLIO()
   
   euler_cur = RotMtoEuler(_state.rot_end);
   geoQuat = tf::createQuaternionMsgFromRollPitchYaw(euler_cur(0), euler_cur(1), euler_cur(2));
-  publish_odometry(pubOdomAftMapped); // publish odom in handleLIO and VIO
+  // publish_odometry(pubOdomAftMapped); // publish odom in handleLIO and VIO
 
   double t3 = omp_get_wtime();
 
@@ -1285,21 +1285,37 @@ template <typename T> void LIVMapper::set_posestamp(T &out)
 
 void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
 {
+  if (!vio_manager || !vio_manager->new_frame_) return;
+
+  /* 1. refined camera pose straight from VIO ------------------------ */
+  const SE3 &T_w_c = vio_manager->new_frame_->T_w_f_; // world -> camera
+  const Eigen::Vector3d  P_wc = T_w_c.translation();  // already in world
+  const Eigen::Quaterniond q_wc(T_w_c.rotation_matrix());
+
+  /* 2. fill nav_msgs/Odometry -------------------------------------- */
   odomAftMapped.header.frame_id = "camera_init";
   odomAftMapped.child_frame_id = "aft_mapped";
   odomAftMapped.header.stamp = ros::Time::now();
-  set_posestamp(odomAftMapped.pose.pose);
 
+  odomAftMapped.pose.pose.position.x = P_wc.x();
+  odomAftMapped.pose.pose.position.y = P_wc.y();
+  odomAftMapped.pose.pose.position.z = P_wc.z();
+  odomAftMapped.pose.pose.orientation.w = q_wc.w();
+  odomAftMapped.pose.pose.orientation.x = q_wc.x();
+  odomAftMapped.pose.pose.orientation.y = q_wc.y();
+  odomAftMapped.pose.pose.orientation.z = q_wc.z();
+
+  /* 3. broadcast identical TF  (parent→child = world→camera) -------- */
   static tf::TransformBroadcaster br;
-  tf::Transform transform;
-  tf::Quaternion q;
-  transform.setOrigin(tf::Vector3(_state.pos_end(0), _state.pos_end(1), _state.pos_end(2)));
-  q.setW(geoQuat.w);
-  q.setX(geoQuat.x);
-  q.setY(geoQuat.y);
-  q.setZ(geoQuat.z);
-  transform.setRotation(q);
-  br.sendTransform( tf::StampedTransform(transform, odomAftMapped.header.stamp, "camera_init", "aft_mapped") );
+  tf::Transform tf_cam;
+  tf_cam.setOrigin(tf::Vector3(P_wc.x(), P_wc.y(), P_wc.z()));
+  tf_cam.setRotation(tf::Quaternion(q_wc.x(), q_wc.y(), q_wc.z(), q_wc.w()));
+  br.sendTransform(tf::StampedTransform(tf_cam,
+                                        odomAftMapped.header.stamp,
+                                        "camera_init",
+                                        "aft_mapped"));
+
+  /* 4. publish ----------------------------------------------------- */
   pubOdomAftMapped.publish(odomAftMapped);
 }
 
