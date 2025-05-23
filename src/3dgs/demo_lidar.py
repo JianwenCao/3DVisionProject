@@ -81,7 +81,7 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform, intrinsic
         # 加载并转换姿态
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
         c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
-        w2c = torch.inverse(c2w)
+        w2c = torch.transpose(c2w)
         pose = transform_to_tensor(w2c)
 
         # 加载并转换 LiDAR 点

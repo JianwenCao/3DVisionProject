@@ -1,13 +1,13 @@
 # config.yaml
 opt_params:
-  pose_lr: 0.0001
+  pose_lr: 0.0
   position_lr_init: 0.0
   position_lr_final: 0.0
-  position_lr_max_steps: 5000
-  feature_lr: 0.0025
-  opacity_lr: 0.05
-  scaling_lr: 0.002
-  rotation_lr: 0.001
+  position_lr_max_steps: 0
+  feature_lr: 0.0
+  opacity_lr: 0.0
+  scaling_lr: 0.0
+  rotation_lr: 0.0
   percent_dense: 0.01
   lambda_dssim: 0.2
   densify_grad_threshold: 0.0002
