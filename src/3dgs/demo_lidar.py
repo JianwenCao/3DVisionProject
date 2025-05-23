@@ -71,52 +71,6 @@ def transform_points(points, T_ab):
     return transformed_points
 
 
-def project_lidar_to_depth(points, pose, intrinsic, H=512, W=640, max_depth=80):
-    """Project LiDAR points to depth map in GS coordinate system."""
-    fx, fy, cx, cy = intrinsic
-    points_xyz = points[:, :3]  # Extract x, y, z
-    points_homo = torch.cat([points_xyz, torch.ones(points_xyz.shape[0], 1, device=points.device)], dim=1)
-
-    # Convert pose to extrinsic (c2w in GS frame)
-    # Define transfrom FAST-LIVO2 to GS coordinate system
-    T = torch.tensor([
-        [0, -1, 0, 0],  # -y_fast = x_gs
-        [0, 0, -1, 0],  # -z_fast = y_gs
-        [1, 0, 0, 0],  # x_fast = z_gs
-        [0, 0, 0, 1]
-    ], dtype=torch.float32)
-    tx, ty, tz, qx, qy, qz, qw = pose.tolist()  # c2w matrix
-    w2c = torch.inverse(quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T))
-    # Transform points to camera frame
-    cam_points = torch.matmul(points_homo, w2c.T)
-    depths = cam_points[:, 2]
-    valid = (depths > 0.1) & (depths < max_depth)
-    cam_points = cam_points[valid]
-    depths = depths[valid]
-
-    if len(depths) == 0:
-        return torch.zeros(H, W, device=points.device)
-
-    x_norm = cam_points[:, 0] / depths
-    y_norm = cam_points[:, 1] / depths
-    u = fx * x_norm + cx
-    v = fy * y_norm + cy
-
-    valid = (u >= 0) & (u < W) & (v >= 0) & (v < H)
-    u = u[valid].long()
-    v = v[valid].long()
-    depths = depths[valid]
-
-    depth_map = torch.zeros(H, W, device=points.device)
-    if valid.sum() > 0:
-        sorted_indices = torch.argsort(depths, descending=True)
-        u = u[sorted_indices]
-        v = v[sorted_indices]
-        depths = depths[sorted_indices]
-        depth_map[v, u] = depths
-    return depth_map
-
-
 def data_loader(queue, num_frames, dataset_path, coordinate_transform):
     batch_size = 10
     batch_data = {"images": [], "poses": [], "intrinsics": [], "points": [], "tstamp": []}
@@ -126,7 +80,7 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform):
         image = torch.tensor(np.array(image_pil)).permute(2, 0, 1).cpu()
 
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
+        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform))
         w2c = torch.inverse(c2w)
         pose = transform_to_tensor(w2c)
         intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
@@ -191,13 +145,16 @@ if __name__ == '__main__':
     config = load_config(config_path)
     gs = GSBackEnd(config, save_dir="./output", use_gui=True)
 
-    # Define transfrom FAST-LIVO2 to GS coordinate system
-    T = torch.tensor([
-        [0, -1, 0, 0],  # -y_fast = x_gs
-        [0, 0, -1, 0],  # -z_fast = y_gs
-        [1, 0, 0, 0],  # x_fast = z_gs
-        [0, 0, 0, 1]
-    ], dtype=torch.float32)
+    # Define transfrom FAST-LIVO2 to GS (OpenCV) coordinate system
+    # T = torch.tensor([
+    #     [0, -1, 0, 0],  # -y_fast = x_gs
+    #     [0, 0, -1, 0],  # -z_fast = y_gs
+    #     [1, 0, 0, 0],  # x_fast = z_gs
+    #     [0, 0, 0, 1]
+    # ], dtype=torch.float32)
+
+    # Pose now published in OpenCV coordinate system
+    T = torch.eye(4, dtype=torch.float32)
 
     loader_process = mp.Process(target=data_loader, args=(queue, num_frames, dataset_path, T))
     loader_process.start()
