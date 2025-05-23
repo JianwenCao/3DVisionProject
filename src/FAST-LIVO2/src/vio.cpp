@@ -1694,7 +1694,6 @@ void VIOManager::updateFrameState(StatesGroup state)
   Rcw = Rci * Rwi.transpose();
   Pcw = -Rci * Rwi.transpose() * Pwi + Pci;
   new_frame_->T_f_w_ = SE3(Rcw, Pcw);
-  new_frame_->T_w_f_ = SE3(Rcw, Pcw).inverse();
 }
 
 void VIOManager::plotTrackedPoints()

@@ -1285,18 +1285,16 @@ template <typename T> void LIVMapper::set_posestamp(T &out)
 
 void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
 {
+  // Publish VIO refined pose in the camera coordinate system (different from IMU system)
   if (!vio_manager || !vio_manager->new_frame_) return;
-
-  /* 1. refined camera pose straight from VIO ------------------------ */
-  const SE3 &T_w_c = vio_manager->new_frame_->T_w_f_; // world -> camera
-  const Eigen::Vector3d  P_wc = T_w_c.translation();  // already in world
+  
+  const SE3 &T_w_c = vio_manager->new_frame_->T_f_w_.inverse();
+  const Eigen::Vector3d  P_wc = T_w_c.translation();
   const Eigen::Quaterniond q_wc(T_w_c.rotation_matrix());
 
-  /* 2. fill nav_msgs/Odometry -------------------------------------- */
   odomAftMapped.header.frame_id = "camera_init";
   odomAftMapped.child_frame_id = "aft_mapped";
   odomAftMapped.header.stamp = ros::Time::now();
-
   odomAftMapped.pose.pose.position.x = P_wc.x();
   odomAftMapped.pose.pose.position.y = P_wc.y();
   odomAftMapped.pose.pose.position.z = P_wc.z();
@@ -1305,17 +1303,12 @@ void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
   odomAftMapped.pose.pose.orientation.y = q_wc.y();
   odomAftMapped.pose.pose.orientation.z = q_wc.z();
 
-  /* 3. broadcast identical TF  (parent→child = world→camera) -------- */
   static tf::TransformBroadcaster br;
-  tf::Transform tf_cam;
-  tf_cam.setOrigin(tf::Vector3(P_wc.x(), P_wc.y(), P_wc.z()));
-  tf_cam.setRotation(tf::Quaternion(q_wc.x(), q_wc.y(), q_wc.z(), q_wc.w()));
-  br.sendTransform(tf::StampedTransform(tf_cam,
-                                        odomAftMapped.header.stamp,
-                                        "camera_init",
-                                        "aft_mapped"));
-
-  /* 4. publish ----------------------------------------------------- */
+  tf::Transform transform;
+  tf::Quaternion q;
+  transform.setOrigin(tf::Vector3(P_wc.x(), P_wc.y(), P_wc.z()));
+  transform.setRotation(tf::Quaternion(q_wc.x(), q_wc.y(), q_wc.z(), q_wc.w()));
+  br.sendTransform( tf::StampedTransform(transform, odomAftMapped.header.stamp, "camera_init", "aft_mapped") );
   pubOdomAftMapped.publish(odomAftMapped);
 }
 
