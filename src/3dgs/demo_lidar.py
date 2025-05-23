@@ -80,7 +80,7 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform):
         image = torch.tensor(np.array(image_pil)).permute(2, 0, 1).cpu()
 
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform))
+        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
         w2c = torch.inverse(c2w)
         pose = transform_to_tensor(w2c)
         intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
