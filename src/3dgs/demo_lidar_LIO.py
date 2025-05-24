@@ -150,7 +150,6 @@ if __name__ == '__main__':
     coordinate_transform = torch.tensor([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=torch.float32)
     intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
     K = np.array([[intrinsics[0], 0, intrinsics[2]], [0, intrinsics[1], intrinsics[3]], [0, 0, 1]])
-
     T_ci = compute_imu_to_camera_transform(coordinate_transform)
 
     loader_process = mp.Process(target=data_loader, args=(queue, num_frames, dataset_path, coordinate_transform, intrinsics, K, T_ci))
@@ -165,7 +164,6 @@ if __name__ == '__main__':
         gs.process_track_data(packet)
         processed_frames += batch_size
         pbar.update(batch_size)
-
         if packet['is_last']:
             updated_poses = gs.finalize()
             gtimages, trajs = [], []

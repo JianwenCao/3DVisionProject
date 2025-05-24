@@ -24,19 +24,18 @@ def quaternion_to_rotation_matrix(qx, qy, qz, qw):
 
 
 def quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T_ab):
-    assert type(T_ab) == torch.Tensor, "Transformation matrix must be a torch tensor"
+    assert isinstance(T_ab, torch.Tensor), "Transformation matrix must be a torch tensor"
     assert T_ab.shape == (4, 4), "Transformation matrix must be 4x4"
 
     R_A = quaternion_to_rotation_matrix(qx, qy, qz, qw)
     T_A = torch.eye(4, dtype=T_ab.dtype, device=T_ab.device)
     T_A[:3, :3] = torch.tensor(R_A, dtype=T_ab.dtype, device=T_ab.device)
     T_A[:3, 3] = torch.tensor([tx, ty, tz], dtype=T_ab.dtype, device=T_ab.device)
-    T_B = T_ab @ T_A @ torch.inverse(T_ab)
-    return T_B
+    return T_ab @ T_A @ torch.inverse(T_ab)
 
 
 def transform_to_tensor(T):
-    assert type(T) == torch.Tensor, "Transformation matrix must be a torch tensor"
+    assert isinstance(T, torch.Tensor), "Transformation matrix must be a torch tensor"
     assert T.shape == (4, 4), "Transformation matrix must be 4x4"
 
     t = T[:3, 3]
@@ -48,15 +47,14 @@ def transform_to_tensor(T):
 
 
 def transform_points(points, T_ab):
-    assert type(points) == torch.Tensor, "Points must be a torch tensor"
+    assert isinstance(points, torch.Tensor), "Points must be a torch tensor"
     assert points.shape[1] == 6, "Points must have 6 columns (x, y, z, r, g, b)"
-    assert type(T_ab) == torch.Tensor, "Transformation matrix must be a torch tensor"
+    assert isinstance(T_ab, torch.Tensor), "Transformation matrix must be a torch tensor"
     assert T_ab.shape == (4, 4), "Transformation matrix must be 4x4"
 
     T = torch.eye(6, dtype=torch.float32)
     T[:4, :4] = T_ab
-    transformed_points = (T @ points.T).T
-    return transformed_points
+    return (T @ points.T).T
 
 def compute_imu_to_camera_transform(coordinate_transform):
     """Compute IMU to Camera transformation matrix."""
@@ -98,9 +96,10 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform, intrinsic
             image = cv2.undistort(image, K, dist_coeffs)
         image = torch.tensor(image).permute(2, 0, 1).cpu()
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-        c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
-        w2c = torch.inverse(c2w)
-        pose = transform_to_tensor(w2c)
+        T_wi = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
+        T_wc = T_wi @ torch.inverse(T_ci)
+        T_cw = torch.inverse(T_wc)
+        pose = transform_to_tensor(T_cw)
 
         lidar_points = torch.tensor(np.load(f"{dataset_path}/frame{i}/points.npy"))
         transformed_lidar_points = transform_points(lidar_points, coordinate_transform)
@@ -137,7 +136,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--dataset", "-d",
-        default="../../dataset/CBD_01_full_VIO",
+        default="../../dataset/CBD_Building_01_full_LIO",
         help="Path to local dataset w.r.t to the current working directory."
     )
     parser.add_argument(
@@ -168,16 +167,11 @@ if __name__ == '__main__':
     config = load_config(config_path)
     gs = GSBackEnd(config, save_dir="./output", use_gui=True)
 
-    coordinate_transform = torch.tensor([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1]
-    ], dtype=torch.float32)
-
+    coordinate_transform = torch.tensor([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=torch.float32)
     intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
     K = np.array([[intrinsics[0], 0, intrinsics[2]], [0, intrinsics[1], intrinsics[3]], [0, 0, 1]])
     T_ci = compute_imu_to_camera_transform(coordinate_transform)
+
     loader_process = mp.Process(target=data_loader,
                                 args=(queue, num_frames, dataset_path, coordinate_transform, intrinsics, K, frame_mask, T_ci))
     loader_process.start()
@@ -191,11 +185,9 @@ if __name__ == '__main__':
         gs.process_track_data(packet)
         processed_frames += batch_size
         pbar.update(batch_size)
-
         if packet['is_last']:
             updated_poses = gs.finalize()
             gtimages, trajs = [], []
-            # Evaluate all frames for the entire trajectory
             for i in range(num_frames):
                 image_pil = Image.open(f"{dataset_path}/frame{i}/image.png")
                 image = np.array(image_pil)
@@ -209,7 +201,7 @@ if __name__ == '__main__':
                 T_cw = torch.inverse(T_wc)
                 trajs.append(T_cw.cuda())
             gs.eval_rendering({index: tensor for index, tensor in enumerate(gtimages)}, None, trajs,
-                              torch.arange(0, num_frames))
+                              torch.tensor(frame_mask))
             break
 
     pbar.close()
