@@ -49,6 +49,10 @@ typedef struct VoxelMapConfig
   double sliding_thresh;
   bool map_sliding_en;
   int half_map_size;
+
+  // gaussian splat message trigger
+  int gs_new_voxel_threshold_;
+
 } VoxelMapConfig;
 
 typedef struct PointToPlane
@@ -217,6 +221,10 @@ public:
   std::vector<pointWithVar> pv_list_;
   std::vector<PointToPlane> ptpl_list_;
 
+  // gaussian splat
+  uint new_voxel_count_;
+  bool gs_publish_next_;
+
   VoxelMapManager(VoxelMapConfig &config_setting, std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
       : config_setting_(config_setting), voxel_map_(voxel_map)
   {
@@ -224,6 +232,9 @@ public:
     feats_undistort_.reset(new PointCloudXYZI());
     feats_down_body_.reset(new PointCloudXYZI());
     feats_down_world_.reset(new PointCloudXYZI());
+
+    new_voxel_count_ = 0;
+    gs_publish_next_ = false;
   };
 
   void StateEstimation(StatesGroup &state_propagat);

@@ -107,6 +107,8 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<bool>("publish/pub_effect_point_en", pub_effect_point_en, false);
   nh.param<bool>("publish/dense_map_en", dense_map_en, false);
 
+  nh.param<bool>("gs/gs_en", gs_en, false);
+
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
 }
 
@@ -317,9 +319,24 @@ void LIVMapper::handleVIO()
   //   visual_sub_map->push_back(temp_map);
   // }
 
-  publish_frame_world(pubLaserCloudFullRes, vio_manager);
-  publish_img_rgb(pubImage, vio_manager);
-
+  // Check if enough new voxels initialized in the last UpdateVoxelMap to trigger publishing for Gaussian Splatting
+  if (!gs_en) {
+    publish_frame_world(pubLaserCloudFullRes, vio_manager);
+    publish_img_rgb(pubImage, vio_manager);
+    publish_odometry(pubOdomAftMapped); // publish odom inside the VIO step for better syncing w/ camera/LiDAR
+  }
+  else {
+    if (voxelmap_manager->gs_publish_next_) {
+      std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+      std::cout << "\033[1;35m|  Publish for GS, new_voxel_count > threshold  |\033[0m\n";
+      std::cout << "\033[1;35m+-----------------------------------------------+\033[0m\n";
+      publish_frame_world(pubLaserCloudFullRes, vio_manager);
+      publish_img_rgb(pubImage, vio_manager);
+      publish_odometry(pubOdomAftMapped);
+      voxelmap_manager->gs_publish_next_ = false;
+    }
+  }
+  
   euler_cur = RotMtoEuler(_state.rot_end);
   fout_out << std::setw(20) << LidarMeasures.last_lio_update_time - _first_lidar_time << " " << euler_cur.transpose() * 57.3 << " "
             << _state.pos_end.transpose() << " " << _state.vel_end.transpose() << " " << _state.bias_g.transpose() << " "
@@ -399,7 +416,7 @@ void LIVMapper::handleLIO()
   
   euler_cur = RotMtoEuler(_state.rot_end);
   geoQuat = tf::createQuaternionMsgFromRollPitchYaw(euler_cur(0), euler_cur(1), euler_cur(2));
-  publish_odometry(pubOdomAftMapped);
+  // publish_odometry(pubOdomAftMapped); // publish odom in handleLIO and VIO
 
   double t3 = omp_get_wtime();
 
@@ -1170,7 +1187,7 @@ void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, 
   { 
     pcl::toROSMsg(*pcl_w_wait_pub, laserCloudmsg); 
   }
-  laserCloudmsg.header.stamp = ros::Time::now(); //.fromSec(last_timestamp_lidar);
+  laserCloudmsg.header.stamp = ros::Time::now();
   laserCloudmsg.header.frame_id = "camera_init";
   pubLaserCloudFullRes.publish(laserCloudmsg);
 
@@ -1268,20 +1285,29 @@ template <typename T> void LIVMapper::set_posestamp(T &out)
 
 void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
 {
+  // Publish VIO refined pose in the camera coordinate system (different from IMU system)
+  if (!vio_manager || !vio_manager->new_frame_) return;
+  
+  const SE3 &T_w_c = vio_manager->new_frame_->T_f_w_.inverse();
+  const Eigen::Vector3d  P_wc = T_w_c.translation();
+  const Eigen::Quaterniond q_wc(T_w_c.rotation_matrix());
+
   odomAftMapped.header.frame_id = "camera_init";
   odomAftMapped.child_frame_id = "aft_mapped";
-  odomAftMapped.header.stamp = ros::Time::now(); //.ros::Time()fromSec(last_timestamp_lidar);
-  set_posestamp(odomAftMapped.pose.pose);
+  odomAftMapped.header.stamp = ros::Time::now();
+  odomAftMapped.pose.pose.position.x = P_wc.x();
+  odomAftMapped.pose.pose.position.y = P_wc.y();
+  odomAftMapped.pose.pose.position.z = P_wc.z();
+  odomAftMapped.pose.pose.orientation.w = q_wc.w();
+  odomAftMapped.pose.pose.orientation.x = q_wc.x();
+  odomAftMapped.pose.pose.orientation.y = q_wc.y();
+  odomAftMapped.pose.pose.orientation.z = q_wc.z();
 
   static tf::TransformBroadcaster br;
   tf::Transform transform;
   tf::Quaternion q;
-  transform.setOrigin(tf::Vector3(_state.pos_end(0), _state.pos_end(1), _state.pos_end(2)));
-  q.setW(geoQuat.w);
-  q.setX(geoQuat.x);
-  q.setY(geoQuat.y);
-  q.setZ(geoQuat.z);
-  transform.setRotation(q);
+  transform.setOrigin(tf::Vector3(P_wc.x(), P_wc.y(), P_wc.z()));
+  transform.setRotation(tf::Quaternion(q_wc.x(), q_wc.y(), q_wc.z(), q_wc.w()));
   br.sendTransform( tf::StampedTransform(transform, odomAftMapped.header.stamp, "camera_init", "aft_mapped") );
   pubOdomAftMapped.publish(odomAftMapped);
 }

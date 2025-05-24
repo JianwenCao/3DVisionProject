@@ -83,3 +83,7 @@ pcd_save:
   interval: -1
   # how many LiDAR frames saved in each pcd file;
   # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+
+gs:
+  gs_en: false               # true: handleVIO publishes when new_voxel_threshold is reached, false: every frame 
+  new_voxel_threshold: 100  # triggers img/lidar/pose publishing for Gaussian Splatting

@@ -1,0 +1,47 @@
+{
+    "name": "HISLAM2 With GPU",
+    "dockerFile": "Dockerfile",
+    "context": "../..",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/catkin_ws,type=bind,consistency=cached",
+    "workspaceFolder": "/catkin_ws",
+  
+    "runArgs": [
+      "--gpus", "all",
+      "--net=host",
+      "-e", "DISPLAY=${env:DISPLAY}",
+      "-e", "QT_X11_NO_MITSHM=1",
+      "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
+      // "--device=/dev/dri:/dev/dri",
+      
+      "-e", "__NV_PRIME_RENDER_OFFLOAD=1",
+      "-e", "__GLX_VENDOR_LIBRARY_NAME=nvidia",
+      "--shm-size=10g"
+    ],
+  
+    "customizations": {
+      "vscode": {
+        "settings": {
+          "terminal.integrated.profiles.linux": {
+            "bash": {
+              "path": "/bin/bash"
+            }
+          },
+          "terminal.integrated.defaultProfile.linux": "bash"
+        },
+        "extensions": [
+          "ms-vscode.cpptools",
+          "ms-python.python",
+          "twxs.cmake"
+        ]
+      }
+    },
+  
+    "mounts": [
+      "source=${env:HOME}/dataset_fastlivo2,target=/home/devuser/dataset_fastlivo2,type=bind,consistency=cached"
+    ],
+
+    "postCreateCommand": "./.devcontainer/hislam_with_gpu/post_create.sh",
+  
+    "remoteUser": "devuser"
+  }
+  

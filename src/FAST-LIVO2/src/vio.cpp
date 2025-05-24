@@ -1722,15 +1722,15 @@ void VIOManager::plotTrackedPoints()
     VisualPoint *pt = visual_submap->voxel_points[i];
     V2D pc(new_frame_->w2c(pt->pos_));
 
-    if (visual_submap->errors[i] <= visual_submap->propa_errors[i])
-    {
-      // inlier_count++;
-      cv::circle(img_cp, cv::Point2f(pc[0], pc[1]), 7, cv::Scalar(0, 255, 0), -1, 8); // Green Sparse Align tracked
-    }
-    else
-    {
-      cv::circle(img_cp, cv::Point2f(pc[0], pc[1]), 7, cv::Scalar(255, 0, 0), -1, 8); // Blue Sparse Align tracked
-    }
+    // if (visual_submap->errors[i] <= visual_submap->propa_errors[i])
+    // {
+    //   // inlier_count++;
+    //   cv::circle(img_cp, cv::Point2f(pc[0], pc[1]), 7, cv::Scalar(0, 255, 0), -1, 8); // Green Sparse Align tracked
+    // }
+    // else
+    // {
+    //   cv::circle(img_cp, cv::Point2f(pc[0], pc[1]), 7, cv::Scalar(255, 0, 0), -1, 8); // Blue Sparse Align tracked
+    // }
   }
   // std::string text = std::to_string(inlier_count) + " " + std::to_string(total_points);
   // cv::Point2f origin;
