@@ -98,7 +98,7 @@ class GSBackEnd(mp.Process):
                 else:
                     self.viewpoints[idx] = viewpoint
 
-        self.map(self.current_window, iters=10)
+        self.map(self.current_window, iters=100)
 
         if self.use_gui:
             keyframes = [self.viewpoints[kf_idx] for kf_idx in self.current_window]
