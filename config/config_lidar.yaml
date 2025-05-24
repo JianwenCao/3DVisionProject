@@ -1,13 +1,13 @@
 # config.yaml
 opt_params:
-  pose_lr: 0.0
-  position_lr_init: 0.0
-  position_lr_final: 0.0
-  position_lr_max_steps: 0
-  feature_lr: 0.0
-  opacity_lr: 0.0
-  scaling_lr: 0.0
-  rotation_lr: 0.0
+  pose_lr: 0.0001
+  position_lr_init: 0.000016
+  position_lr_final: 0.0000016
+  position_lr_max_steps: 2000
+  feature_lr: 0.0025
+  opacity_lr: 0.05
+  scaling_lr: 0.001
+  rotation_lr: 0.001
   percent_dense: 0.01
   lambda_dssim: 0.2
   densify_grad_threshold: 0.0002
@@ -15,17 +15,17 @@ opt_params:
 
 Training:
   init_itr_num: 3000
-  init_gaussian_update: 50
-  init_gaussian_reset: 300
-  init_gaussian_th: 0.01
-  init_gaussian_extent: 80
-  gaussian_update_every: 120
-  gaussian_update_offset: 40
-  gaussian_th: 0.6
+  init_gaussian_update: 100
+  init_gaussian_reset: 500
+  init_gaussian_th: 0.005
+  init_gaussian_extent: 30
+  gaussian_update_every: 150
+  gaussian_update_offset: 50
+  gaussian_th: 0.7
   gaussian_extent: 2.0
-  gaussian_reset: 1200
-  size_threshold: 10
-  window_size: 1
+  gaussian_reset: 2001
+  size_threshold: 20
+  window_size: 10
   rgb_boundary_threshold: 0.01
   compensate_exposure: true
   monocular: false

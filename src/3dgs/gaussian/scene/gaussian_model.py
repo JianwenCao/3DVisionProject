@@ -110,147 +110,38 @@ class GaussianModel:
         return self.create_pcd_from_image_and_depth(cam, rgb, depth, init)
 
     # Open3d based down_sample and normal estimation
-    # def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
-    #     if init:
-    #         voxel_size = self.config["Dataset"].get("voxel_size_init", 0.03)  # Root voxel size in meters
-    #     else:
-    #         voxel_size = self.config["Dataset"].get("voxel_size", 0.05)  # Root voxel size in meters
-    #
-    #     # Create Open3D point cloud
-    #     pcd = o3d.geometry.PointCloud()
-    #     pcd.points = o3d.utility.Vector3dVector(xyz)
-    #     pcd.colors = o3d.utility.Vector3dVector(rgb)
-    #
-    #     # Voxel downsampling
-    #     pcd_ds = pcd.voxel_down_sample(voxel_size=voxel_size)
-    #
-    #     # Compute normals
-    #     pcd_ds.estimate_normals(
-    #         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
-    #     )
-    #     cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
-    #     pcd_ds.orient_normals_towards_camera_location(cam_pose)
-    #
-    #     # Extract downsampled points, colors, and normals
-    #     new_xyz = np.asarray(pcd_ds.points)
-    #     new_rgb = np.asarray(pcd_ds.colors)
-    #     new_normals = np.asarray(pcd_ds.normals)
-    #
-    #     # Create BasicPointCloud
-    #     pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
-    #     self.ply_input = pcd
-    #
-    #     fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
-    #     fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
-    #
-    #     features = torch.zeros(
-    #         (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
-    #         device="cuda", dtype=torch.float32
-    #     )
-    #     features[:, :3, 0] = fused_color
-    #     features[:, 3:, 1:] = 0.0
-    #
-    #     # Initialize scales using voxel size and thin s_delta
-    #     M = new_xyz.shape[0]  # Number of points (downsampled)
-    #     s_xy = torch.full((M,), voxel_size, device="cuda")
-    #     s_delta = torch.full_like(s_xy, 0.01)  # 1 cm slice
-    #     scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)  # (M,3)
-    #     scales = torch.log(scales)
-    #
-    #     if self.config["Training"]["rotation_init"]:
-    #         normals_cv = torch.from_numpy(new_normals).float().cuda()
-    #         normals_gl = normals_cv * torch.tensor([1., -1., 1.],
-    #                                                device=normals_cv.device)
-    #
-    #         # cos(θ) = Z · n = n_z
-    #         dot = torch.clamp(normals_gl[:, 2], -1.0, 1.0)
-    #         half_ang = 0.5 * torch.acos(dot)  # (N,)
-    #
-    #         # Rotation axis = cross(Z, n) = (-n_y, n_x, 0)
-    #         axis = torch.stack([
-    #             -normals_gl[:, 1],
-    #             normals_gl[:, 0],
-    #             torch.zeros_like(dot)
-    #         ], dim=1)
-    #         axis = axis / (axis.norm(dim=1, keepdim=True) + 1e-8)
-    #
-    #         # Local -> world quaternion [w, x, y, z]
-    #         sin_h = torch.sin(half_ang).unsqueeze(1)
-    #         cos_h = torch.cos(half_ang).unsqueeze(1)
-    #         q_l2w = torch.cat([cos_h, axis * sin_h], dim=1)
-    #
-    #         # Handle edge cases, parallel with optical axis
-    #         eps = 1e-6
-    #         mask_id = dot > (1 - eps)  # zero rotation
-    #         mask_pi = dot < (-1 + eps)  # 180° rotation
-    #         if mask_id.any():
-    #             q_l2w[mask_id] = torch.tensor([1., 0., 0., 0.], device=q_l2w.device)
-    #         if mask_pi.any():
-    #             q_l2w[mask_pi] = torch.tensor([0., 1., 0., 0.], device=q_l2w.device)
-    #
-    #         # World -> local and pack [w, x, y, z]
-    #         rots = torch.cat([q_l2w[:, :1], -q_l2w[:, 1:]], dim=1)  # (N, 4)
-    #         rots = rots.clone().detach().requires_grad_(True).cuda()
-    #     else:
-    #         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-    #         rots[:, 0] = 1
-    #         normals_gl = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
-    #
-    #     num_points = fused_point_cloud.shape[0]
-    #     opacities = inverse_sigmoid(
-    #         0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
-    #     )
-    #
-    #     return fused_point_cloud, features, scales, rots, opacities, normals_gl
-
-    # MeshLib based down_sample and normal estimation
     def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
         if init:
-            voxel_size = self.config["Dataset"].get("voxel_size_init", 0.03)  # Root voxel size in meters
+            voxel_size = self.config["Dataset"].get("voxel_size_init", 0.4)  # Root voxel size in meters
         else:
-            voxel_size = self.config["Dataset"].get("voxel_size", 0.05)  # Root voxel size in meters
+            voxel_size = self.config["Dataset"].get("voxel_size", 0.5)  # Root voxel size in meters
 
-        # Create MeshLib point cloud
-        cloud = mrnp.pointCloudFromPoints(xyz)
-        settings = mr.TriangulationHelpersSettings()
-        settings.numNeis = 16  # TODO can tune mesh/search params
-        allLocal = mr.buildUnitedLocalTriangulations(cloud, settings)
-        cloud.normals = mr.makeUnorientedNormals(
-            cloud,
-            allLocal,
-            orient=mr.OrientNormals.TowardOrigin)
+        # Create Open3D point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(xyz)
+        pcd.colors = o3d.utility.Vector3dVector(rgb)
 
-        new_xyz = xyz
-        new_rgb = rgb
-        new_normals = mrnp.toNumpyArray(cloud.normals)
+        # Voxel downsampling
+        pcd_ds = pcd.voxel_down_sample(voxel_size=voxel_size)
 
-        # Voxel-based downsampling using MeshLib
-        keys, inv = np.unique(
-            np.floor(new_xyz / voxel_size).astype(int),
-            axis=0, return_inverse=True)
-        M = keys.shape[0]
-        # Counts per voxel
-        counts = np.bincount(inv, minlength=M).astype(np.float32)  # (M,)
+        # Compute normals
+        pcd_ds.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=60)
+        )
+        cam_pose = -(cam_info.R.T @ cam_info.T).cpu().numpy()
+        pcd_ds.orient_normals_towards_camera_location(cam_pose)
 
-        # Sum up xyz, rgb, normals per voxel
-        centroids = np.zeros((M, 3), dtype=np.float32)
-        colors = np.zeros((M, 3), dtype=np.float32)
-        norms = np.zeros((M, 3), dtype=np.float32)
-        np.add.at(centroids, inv, new_xyz)
-        np.add.at(colors, inv, new_rgb)
-        np.add.at(norms, inv, new_normals)
-
-        # Normalize to get mean & unit normals
-        centroids /= counts[:, None]
-        colors /= counts[:, None]
-        norms /= (np.linalg.norm(norms, axis=1, keepdims=True) + 1e-8)
+        # Extract downsampled points, colors, and normals
+        new_xyz = np.asarray(pcd_ds.points)
+        new_rgb = np.asarray(pcd_ds.colors)
+        new_normals = np.asarray(pcd_ds.normals)
 
         # Create BasicPointCloud
-        pcd = BasicPointCloud(points=centroids, colors=colors, normals=norms)
+        pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
         self.ply_input = pcd
 
-        fused_point_cloud = torch.from_numpy(centroids).float().cuda()
-        fused_color = RGB2SH(torch.from_numpy(colors).float().cuda())
+        fused_point_cloud = torch.from_numpy(new_xyz).float().cuda()
+        fused_color = RGB2SH(torch.from_numpy(new_rgb).float().cuda())
 
         features = torch.zeros(
             (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
@@ -260,14 +151,14 @@ class GaussianModel:
         features[:, 3:, 1:] = 0.0
 
         # Initialize scales using voxel size and thin s_delta
-        M = centroids.shape[0]  # Number of points (downsampled)
+        M = new_xyz.shape[0]  # Number of points (downsampled)
         s_xy = torch.full((M,), voxel_size, device="cuda")
         s_delta = torch.full_like(s_xy, 0.01)  # 1 cm slice
         scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)  # (M,3)
         scales = torch.log(scales)
 
         if self.config["Training"]["rotation_init"]:
-            normals_cv = torch.from_numpy(norms).float().cuda()
+            normals_cv = torch.from_numpy(new_normals).float().cuda()
             normals_gl = normals_cv * torch.tensor([1., -1., 1.],
                                                    device=normals_cv.device)
 
@@ -311,6 +202,115 @@ class GaussianModel:
         )
 
         return fused_point_cloud, features, scales, rots, opacities, normals_gl
+
+    # MeshLib based down_sample and normal estimation
+    # def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
+    #     if init:
+    #         voxel_size = self.config["Dataset"].get("voxel_size_init", 0.03)  # Root voxel size in meters
+    #     else:
+    #         voxel_size = self.config["Dataset"].get("voxel_size", 0.05)  # Root voxel size in meters
+    #
+    #     # Create MeshLib point cloud
+    #     cloud = mrnp.pointCloudFromPoints(xyz)
+    #     settings = mr.TriangulationHelpersSettings()
+    #     settings.numNeis = 16  # TODO can tune mesh/search params
+    #     allLocal = mr.buildUnitedLocalTriangulations(cloud, settings)
+    #     cloud.normals = mr.makeUnorientedNormals(
+    #         cloud,
+    #         allLocal,
+    #         orient=mr.OrientNormals.TowardOrigin)
+    #
+    #     new_xyz = xyz
+    #     new_rgb = rgb
+    #     new_normals = mrnp.toNumpyArray(cloud.normals)
+    #
+    #     # Voxel-based downsampling using MeshLib
+    #     keys, inv = np.unique(
+    #         np.floor(new_xyz / voxel_size).astype(int),
+    #         axis=0, return_inverse=True)
+    #     M = keys.shape[0]
+    #     # Counts per voxel
+    #     counts = np.bincount(inv, minlength=M).astype(np.float32)  # (M,)
+    #
+    #     # Sum up xyz, rgb, normals per voxel
+    #     centroids = np.zeros((M, 3), dtype=np.float32)
+    #     colors = np.zeros((M, 3), dtype=np.float32)
+    #     norms = np.zeros((M, 3), dtype=np.float32)
+    #     np.add.at(centroids, inv, new_xyz)
+    #     np.add.at(colors, inv, new_rgb)
+    #     np.add.at(norms, inv, new_normals)
+    #
+    #     # Normalize to get mean & unit normals
+    #     centroids /= counts[:, None]
+    #     colors /= counts[:, None]
+    #     norms /= (np.linalg.norm(norms, axis=1, keepdims=True) + 1e-8)
+    #
+    #     # Create BasicPointCloud
+    #     pcd = BasicPointCloud(points=centroids, colors=colors, normals=norms)
+    #     self.ply_input = pcd
+    #
+    #     fused_point_cloud = torch.from_numpy(centroids).float().cuda()
+    #     fused_color = RGB2SH(torch.from_numpy(colors).float().cuda())
+    #
+    #     features = torch.zeros(
+    #         (fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2),
+    #         device="cuda", dtype=torch.float32
+    #     )
+    #     features[:, :3, 0] = fused_color
+    #     features[:, 3:, 1:] = 0.0
+    #
+    #     # Initialize scales using voxel size and thin s_delta
+    #     M = centroids.shape[0]  # Number of points (downsampled)
+    #     s_xy = torch.full((M,), voxel_size, device="cuda")
+    #     s_delta = torch.full_like(s_xy, 0.01)  # 1 cm slice
+    #     scales = torch.stack([s_xy, s_xy, s_delta], dim=-1)  # (M,3)
+    #     scales = torch.log(scales)
+    #
+    #     if self.config["Training"]["rotation_init"]:
+    #         normals_cv = torch.from_numpy(norms).float().cuda()
+    #         normals_gl = normals_cv * torch.tensor([1., -1., 1.],
+    #                                                device=normals_cv.device)
+    #
+    #         # cos(θ) = Z · n = n_z
+    #         dot = torch.clamp(normals_gl[:, 2], -1.0, 1.0)
+    #         half_ang = 0.5 * torch.acos(dot)  # (N,)
+    #
+    #         # Rotation axis = cross(Z, n) = (-n_y, n_x, 0)
+    #         axis = torch.stack([
+    #             -normals_gl[:, 1],
+    #             normals_gl[:, 0],
+    #             torch.zeros_like(dot)
+    #         ], dim=1)
+    #         axis = axis / (axis.norm(dim=1, keepdim=True) + 1e-8)
+    #
+    #         # Local -> world quaternion [w, x, y, z]
+    #         sin_h = torch.sin(half_ang).unsqueeze(1)
+    #         cos_h = torch.cos(half_ang).unsqueeze(1)
+    #         q_l2w = torch.cat([cos_h, axis * sin_h], dim=1)
+    #
+    #         # Handle edge cases, parallel with optical axis
+    #         eps = 1e-6
+    #         mask_id = dot > (1 - eps)  # zero rotation
+    #         mask_pi = dot < (-1 + eps)  # 180° rotation
+    #         if mask_id.any():
+    #             q_l2w[mask_id] = torch.tensor([1., 0., 0., 0.], device=q_l2w.device)
+    #         if mask_pi.any():
+    #             q_l2w[mask_pi] = torch.tensor([0., 1., 0., 0.], device=q_l2w.device)
+    #
+    #         # World -> local and pack [w, x, y, z]
+    #         rots = torch.cat([q_l2w[:, :1], -q_l2w[:, 1:]], dim=1)  # (N, 4)
+    #         rots = rots.clone().detach().requires_grad_(True).cuda()
+    #     else:
+    #         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+    #         rots[:, 0] = 1
+    #         normals_gl = torch.zeros((fused_point_cloud.shape[0], 3), device="cuda")
+    #
+    #     num_points = fused_point_cloud.shape[0]
+    #     opacities = inverse_sigmoid(
+    #         0.5 * torch.ones((num_points, 1), device="cuda", dtype=torch.float32)
+    #     )
+    #
+    #     return fused_point_cloud, features, scales, rots, opacities, normals_gl
 
     def init_lr(self, spatial_lr_scale):
         self.spatial_lr_scale = spatial_lr_scale

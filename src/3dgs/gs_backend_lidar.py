@@ -98,7 +98,7 @@ class GSBackEnd(mp.Process):
                 else:
                     self.viewpoints[idx] = viewpoint
 
-        self.map(self.current_window, iters=0)
+        self.map(self.current_window, iters=10)
 
         if self.use_gui:
             keyframes = [self.viewpoints[kf_idx] for kf_idx in self.current_window]
@@ -115,7 +115,7 @@ class GSBackEnd(mp.Process):
                     gtdepth=None))
 
     def finalize(self):
-        # self.color_refinement(iteration_total=self.gaussians.max_steps)
+        self.color_refinement(iteration_total=self.gaussians.max_steps)
         self.gaussians.save_ply(f'{self.save_dir}/3dgs_final.ply')
 
         poses_cw = []
