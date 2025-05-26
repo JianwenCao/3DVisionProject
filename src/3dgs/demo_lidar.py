@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import cv2
 import torch
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -23,12 +24,6 @@ def quaternion_to_rotation_matrix(qx, qy, qz, qw):
 
 
 def quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T_ab):
-    """
-    Convert coordinate system A pose (tx, ty, tz, qx, qy, qz, qw) to transform in B frame.
-    Input:
-    - tx, ty, tz, qx, qy, qz, qw: translation /quaternion in original frame
-    - T_ab: transformation matrix from A to B
-    """
     assert type(T_ab) == torch.Tensor, "Transformation matrix must be a torch tensor"
     assert T_ab.shape == (4, 4), "Transformation matrix must be 4x4"
 
@@ -53,13 +48,6 @@ def transform_to_tensor(T):
 
 
 def transform_points(points, T_ab):
-    """
-    Transform XYZRGB points from frames A to B.
-    Points dimension (N, 6), rows are points, columns 0-5 are x, y, z, r, g, b.
-    Input:
-    - points: (N, 6) tensor of points in frame A.
-    - T_ab: (4, 4) transformation matrix tensor from A to B.
-    """
     assert type(points) == torch.Tensor, "Points must be a torch tensor"
     assert points.shape[1] == 6, "Points must have 6 columns (x, y, z, r, g, b)"
     assert type(T_ab) == torch.Tensor, "Transformation matrix must be a torch tensor"
@@ -71,19 +59,33 @@ def transform_points(points, T_ab):
     return transformed_points
 
 
-def data_loader(queue, num_frames, dataset_path, coordinate_transform):
+def data_loader(queue, num_frames, dataset_path, coordinate_transform, intrinsics, K, frame_mask, use_all_frames):
     batch_size = 10
     batch_data = {"images": [], "poses": [], "intrinsics": [], "points": [], "tstamp": []}
 
-    for i in tqdm(range(num_frames), desc="Loading data"):
-        image_pil = Image.open(f"{dataset_path}/frame{i}/image.png")
-        image = torch.tensor(np.array(image_pil)).permute(2, 0, 1).cpu()
+    # Determine which frames to process based on use_all_frames
+    if use_all_frames:
+        frame_indices = list(range(num_frames))
+    else:
+        frame_indices = sorted(frame_mask)
 
+    # Create a mapping from original frame index to new index
+    frame_index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(frame_indices)}
+
+    for i in tqdm(frame_indices, desc="Loading data"):
+        if i >= num_frames:
+            continue  # Skip if frame index exceeds total number of frames
+        with Image.open(f"{dataset_path}/frame{i}/image.png") as image_pil:
+            image = np.array(image_pil)
+        if len(intrinsics) > 4:
+            dist_coeffs = np.array(intrinsics[4:])
+            image = cv2.undistort(image, K, dist_coeffs)
+        image = torch.tensor(image).permute(2, 0, 1).cpu()
         tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
         c2w = quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform)
         w2c = torch.inverse(c2w)
         pose = transform_to_tensor(w2c)
-        intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
+
         lidar_points = torch.tensor(np.load(f"{dataset_path}/frame{i}/points.npy"))
         transformed_lidar_points = transform_points(lidar_points, coordinate_transform)
 
@@ -91,9 +93,10 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform):
         batch_data["poses"].append(pose)
         batch_data["intrinsics"].append(intrinsics)
         batch_data["points"].append(transformed_lidar_points)
-        batch_data["tstamp"].append(i)
+        # Use the new index for tstamp and viz_idx
+        batch_data["tstamp"].append(frame_index_map[i])
 
-        if len(batch_data["tstamp"]) == batch_size or i == num_frames - 1:
+        if len(batch_data["tstamp"]) == batch_size or i == frame_indices[-1]:
             packet = {
                 'viz_idx': torch.tensor(batch_data["tstamp"]),
                 'tstamp': torch.tensor(batch_data["tstamp"]),
@@ -102,11 +105,10 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform):
                 'points': batch_data["points"],  # feed in list
                 'intrinsics': torch.stack(batch_data["intrinsics"]),
                 'pose_updates': None,
-                'is_last': (i == num_frames - 1)
+                'is_last': (i == frame_indices[-1])
             }
             queue.put(packet)
             batch_data = {"images": [], "poses": [], "intrinsics": [], "points": [], "tstamp": []}
-
     while not queue.empty():
         time.sleep(1)
 
@@ -115,14 +117,12 @@ if __name__ == '__main__':
     mp.set_start_method('spawn')
     torchvision.disable_beta_transforms_warning()
 
-    # Implement argparse to allow personal dataset/config paths
-    # TODO Handles preprocessed data only, modify later to handle online data
     parser = argparse.ArgumentParser(
         description="Runs 3DGS pipeline on preprocessed synced sensor data."
     )
     parser.add_argument(
         "--dataset", "-d",
-        default="../../dataset/CBD_Building_01_full",
+        default="../../dataset/CBD_01_full_VIO",
         help="Path to local dataset w.r.t to the current working directory."
     )
     parser.add_argument(
@@ -135,62 +135,77 @@ if __name__ == '__main__':
         default=1180,
         help="Number of frames to process."
     )
+    parser.add_argument(
+        "--use_all_frames",
+        default='True',
+        action='store_true',
+        help="If set, use all frames (0 to num_frames-1) instead of frame_mask."
+    )
     args = parser.parse_args()
 
     config_path = args.config
     dataset_path = args.dataset
     num_frames = args.num_frames
+    use_all_frames = args.use_all_frames
+
+    # Define the frame mask
+    frame_mask = [0, 121, 118, 116, 113, 111, 109, 108, 145, 160, 166, 173, 178, 183, 194, 207, 229, 257, 273, 290, 302,
+                  314, 325, 335, 341, 350, 358, 360, 364, 368, 375, 382, 404, 411, 433, 440, 442, 457, 464, 471, 477,
+                  487, 499, 509,
+                  519, 530, 541, 556, 562, 579, 601, 618, 636, 643, 647, 653, 665, 675, 685, 695, 709, 730, 747, 756,
+                  772,
+                  781, 789, 808, 825, 844, 861, 882, 896, 904, 909, 914, 917, 925, 934, 944, 955, 960, 973, 981, 986,
+                  997,
+                  1008, 1026, 1030, 1033, 1037, 1038, 1046, 1058, 1068, 1078, 1090, 1100, 1108, 1114, 1118, 1124, 1175,
+                  1130,
+                  1097, 1084]
 
     queue = mp.Queue(maxsize=8)
     config = load_config(config_path)
     gs = GSBackEnd(config, save_dir="./output", use_gui=True)
 
-    # Define transfrom FAST-LIVO2 to GS (OpenCV) coordinate system
-    # T = torch.tensor([
-    #     [0, -1, 0, 0],  # -y_fast = x_gs
-    #     [0, 0, -1, 0],  # -z_fast = y_gs
-    #     [1, 0, 0, 0],  # x_fast = z_gs
-    #     [0, 0, 0, 1]
-    # ], dtype=torch.float32)
+    coordinate_transform = torch.tensor([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ], dtype=torch.float32)
 
-    # Pose now published in OpenCV coordinate system
-    T = torch.eye(4, dtype=torch.float32)
+    intrinsics = torch.tensor(np.loadtxt(f"{dataset_path}/intrinsics.txt"))
+    K = np.array([[intrinsics[0], 0, intrinsics[2]], [0, intrinsics[1], intrinsics[3]], [0, 0, 1]])
 
-    loader_process = mp.Process(target=data_loader, args=(queue, num_frames, dataset_path, T))
+    loader_process = mp.Process(target=data_loader,
+                                args=(queue, num_frames, dataset_path, coordinate_transform, intrinsics, K, frame_mask,
+                                      use_all_frames))
     loader_process.start()
 
-    pbar = tqdm(total=num_frames, desc="Processing frames")
-
+    pbar = tqdm(total=(num_frames if use_all_frames else len(frame_mask)), desc="Processing frames")
     processed_frames = 0
-    frame_counter = 0
-    step = 1  # step for keyframe selection
 
-    while processed_frames < num_frames:
+    while processed_frames < (num_frames if use_all_frames else len(frame_mask)):
         packet = queue.get()
-        frame_counter += len(packet['tstamp'])
+        batch_size = len(packet['tstamp'])
+        gs.process_track_data(packet)
+        processed_frames += batch_size
+        pbar.update(batch_size)
 
-        if frame_counter % step == 0 or packet['is_last']:
-            gs.process_track_data(packet)
-            batch_size = len(packet['tstamp'])
-            processed_frames += batch_size
-            pbar.update(batch_size)
-
-            if packet['is_last']:
-                updated_poses = gs.finalize()
-                gtimages, trajs = [], []
-                for i in range(num_frames):
-                    gtimages.append(
-                        torch.tensor(np.array(Image.open(f"{dataset_path}/frame{i}/image.png"))).permute(2, 0, 1))
-                    tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
-                    extrinsic = torch.inverse(quat_to_transform(tx, ty, tz, qx, qy, qz, qw, T))
-                    trajs.append(extrinsic.cuda())
-                gs.eval_rendering({index: tensor for index, tensor in enumerate(gtimages)}, None, trajs,
-                                  torch.arange(0, num_frames))
-                break
-        else:
-            batch_size = len(packet['tstamp'])
-            processed_frames += batch_size
-            pbar.update(batch_size)
+        if packet['is_last']:
+            updated_poses = gs.finalize()
+            gtimages, trajs = [], []
+            # Evaluate all frames for the entire trajectory
+            for i in range(num_frames):
+                image_pil = Image.open(f"{dataset_path}/frame{i}/image.png")
+                image = np.array(image_pil)
+                if len(intrinsics) > 4:
+                    dist_coeffs = np.array(intrinsics[4:])
+                    image = cv2.undistort(image, K, dist_coeffs)
+                gtimages.append(torch.tensor(image).permute(2, 0, 1).cpu())
+                tx, ty, tz, qx, qy, qz, qw = torch.load(f"{dataset_path}/frame{i}/pose.pt").tolist()
+                extrinsic = torch.inverse(quat_to_transform(tx, ty, tz, qx, qy, qz, qw, coordinate_transform))
+                trajs.append(extrinsic.cuda())
+            gs.eval_rendering({index: tensor for index, tensor in enumerate(gtimages)}, None, trajs,
+                              torch.arange(0, num_frames))
+            break
 
     pbar.close()
     loader_process.join()
