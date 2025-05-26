@@ -6,5 +6,6 @@ src/Sophus/build/
 /src/3dgs/output/
 .idea
 
-src/3dgs/**/__pycache__/
 src/HI-SLAM2/data/
+*.pt
+__pycache__/

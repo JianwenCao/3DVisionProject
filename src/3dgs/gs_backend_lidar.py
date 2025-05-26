@@ -78,25 +78,6 @@ class GSBackEnd(mp.Process):
             self.projection_matrix = getProjectionMatrix2(znear=0.01, zfar=100.0, fx=K[0], fy=K[1], cx=K[2], cy=K[3],
                                                           W=W, H=H).transpose(0, 1).cuda()
 
-        # if packet['pose_updates'] is not None:
-        #     with torch.no_grad():
-        #         tstamps = packet['tstamp']
-        #         indices = (tstamps.unsqueeze(1) == self.gaussians.unique_kfIDs.unsqueeze(0)).nonzero()[:, 0]
-        #         updates = packet['pose_updates'].cuda()[indices]
-        #         updates_scale = packet['scale_updates'].cuda()[indices]
-        #
-        #         xyz = self.gaussians.get_xyz
-        #         xyz = (updates * xyz) / updates_scale
-        #         self.gaussians._xyz[:] = xyz
-        #
-        #         scale = self.gaussians.get_scaling
-        #         scale = scale / updates_scale
-        #         self.gaussians._scaling[:] = self.gaussians.scaling_inverse_activation(scale)
-        #
-        #         rot = SO3(self.gaussians.get_rotation)
-        #         rot = SO3(updates.data[:, 3:]) * rot
-        #         self.gaussians._rotation[:] = rot.data
-
         w2c = SE3(packet["poses"]).matrix().cuda()
         for i, idx in enumerate(packet['viz_idx']):
             idx = idx.item()
@@ -138,15 +119,6 @@ class GSBackEnd(mp.Process):
     def finalize(self):
         self.color_refinement(iteration_total=self.gaussians.max_steps)
         self.gaussians.save_ply(f'{self.save_dir}/3dgs_final.ply')
-
-        poses_cw = []
-        for view in self.viewpoints.values():
-            T_w2c = np.eye(4)
-            T_w2c[0:3, 0:3] = view.R.cpu().numpy()
-            T_w2c[0:3, 3] = view.T.cpu().numpy()
-            poses_cw.append(np.hstack(([view.tstamp], to_se3_vec(T_w2c))))
-        poses_cw.sort(key=lambda x: x[0])
-        return np.stack(poses_cw)
 
     @torch.no_grad()
     def eval_rendering(self, gtimages, gtdepthdir, traj, kf_idx):
@@ -209,9 +181,9 @@ class GSBackEnd(mp.Process):
         return render_pkg
 
     def map(self, current_window, iters, prune=False):
-        if self.debug:
-            print("\n")
-            print_gpu_mem('Loop start, map')
+        # if self.debug:
+        #     print("\n")
+        #     print_gpu_mem('Loop start, map')
 
         if len(current_window) == 0:
             return
@@ -280,8 +252,8 @@ class GSBackEnd(mp.Process):
 
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
-        if self.debug:
-            print_gpu_mem('After 10 opt steps')
+        # if self.debug:
+        #     print_gpu_mem('After 10 opt steps')
 
     def color_refinement(self, iteration_total):
         Log("Starting color refinement")

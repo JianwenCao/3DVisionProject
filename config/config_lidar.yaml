@@ -14,34 +14,25 @@ opt_params:
   exposure_lr: 0.01
 
 Training:
-  init_itr_num: 2000
-  init_gaussian_update: 50
-  init_gaussian_reset: 300
-  init_gaussian_th: 0.01
-  init_gaussian_extent: 80
-  gaussian_update_every: 120
-  gaussian_update_offset: 40
-  gaussian_th: 0.6
+  init_itr_num: 10
+  init_gaussian_update: 100
+  init_gaussian_reset: 500
+  init_gaussian_th: 0.005
+  init_gaussian_extent: 30
+  gaussian_update_every: 150
+  gaussian_update_offset: 50
+  gaussian_th: 0.7
   gaussian_extent: 2.0
-  gaussian_reset: 1200
-  size_threshold: 10
-  window_size: 10
+  gaussian_reset: 2001
+  size_threshold: 20
+  window_size: 1
   rgb_boundary_threshold: 0.01
   compensate_exposure: true
   monocular: false
   max_steps: 15000
-  rotation_init: true
-  lambda_normal: 0.1
-
-Dataset:
-  pcd_downsample: 1.43
-  pcd_downsample_init: 1.43
-  point_size: 0.1
-  adaptive_pointsize: true
-  scale_multiplier: 6.0
-  voxel_size_init: 2.0
-  voxel_size: 0.2
-  max_points_per_voxel: 10
+  rotation_init: True
+  lambda_normal: 0.
+  compensate_exposure: true
 
 Tracking:
   motion_filter:
@@ -68,6 +59,6 @@ Tracking:
   layer_init_num: [ 5, 5, 5, 5, 5 ]
 
 Mapping:
-  voxel_size: 0.05
+  voxel_size: 0.03
   max_points_per_voxel: 1
   max_active_gaussians: 20000 # Matches GS-LIVO indoor experiments

@@ -23,10 +23,6 @@ class GlobalVoxelSlot:
         self.cpu_params = {k: None for k in GAUSS_FIELDS}
         self.cuda_tensors = {k: torch.empty(0, device="cuda") for k in GAUSS_FIELDS}
 
-        # TODO later, dynamically allocate this based on texture
-        # Decide if MAP param or VOXEL param
-        # self.gaussians_per_voxel = None 
-
     def to_cuda_tuple(self):
         """
         Convert CPU gaussian params to tensor tuple for GPU.
@@ -75,7 +71,6 @@ class GlobalVoxelMap:
         except (ValueError, AttributeError) as e:
             raise RuntimeError(f"Error updating voxel parameters: {e}")
 
-
     def insert_gaussians(self, fused_point_cloud, features, scales, rots, opacities, normals, keys):
         """
         For incoming point cloud and initialized parameters, insert into voxel
@@ -116,7 +111,7 @@ class GlobalVoxelMap:
                 continue
             
             slot.cpu_params["xyz"] = xyz_cpu[i]
-            slot.cpu_params["f_dc"] = feats_cpu[i, :, 0]
+            slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
             slot.cpu_params["f_rest"] = feats_cpu[i, :, 1:]
             slot.cpu_params["scaling"] = scales_cpu[i]
             slot.cpu_params["rotation"] = rots_cpu[i]
@@ -194,8 +189,8 @@ class GlobalVoxelMap:
         to_remove = list(old_active - visible_active)
         to_add    = list(visible_new - old_active)
 
-        print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
-              f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
-        print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
+        # print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
+        #       f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
+        # print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
 
         return to_add, to_remove

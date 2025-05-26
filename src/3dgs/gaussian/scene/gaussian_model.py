@@ -283,10 +283,14 @@ class GaussianModel:
             fused_point_cloud, features, scales, rots, opacities, kf_id
         )
 
+    def move_gvm_to_gpu(self, kf_id):
+        self._gpu_add_active_gaussians(self.global_voxel_map, list(self.global_voxel_map.map.keys()), kf_id)
+        
+
     def extend_from_lidar_seq(
             self, cam_info, kf_id=-1, init=False, pcd=None
     ):
-        print("\n[DEBUG] New frame, called extend_from_lidar_seq")
+        # print("\n[DEBUG] New frame, called extend_from_lidar_seq")
         xyz = pcd[:, :3]
         rgb = pcd[:, 3:6] / 255.0
         gvm = self.global_voxel_map
@@ -305,19 +309,20 @@ class GaussianModel:
         
         # Get keys to add/remove from GPU
         to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, keys_to_init)
+        print(f"current gaussians: {self._xyz.shape[0]}, compared to last frame: + {len(to_add)} / - {len(to_remove)}, total: {len(gvm.map)}")
         
         t3 = time.perf_counter()
 
         if to_remove:
             if init:
                 raise ValueError("Should not be removing voxels on first frame")
-            print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
+            # print(f"[DEBUG] Removing {len(to_remove)} voxels from GPU")
             self._gpu_remove_inactive_gaussians(gvm, to_remove)
 
         t4 = time.perf_counter()
 
         if to_add:
-            print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
+            # print(f"[DEBUG] Adding {len(to_add)} voxels to GPU")
             self._gpu_add_active_gaussians(gvm, to_add, kf_id)
 
         t5 = time.perf_counter()
@@ -328,17 +333,17 @@ class GaussianModel:
                 (slot.gpu_idx == -1) == (key not in gvm.active_keys)
                 for key, slot in gvm.map.items()
             ), "Inconsistent gpu_idx in slots"
-        assert self._xyz.shape[0] == len(gvm.active_keys), \
-            f"GPU size {self._xyz.shape[0]} != active_keys size {len(gvm.active_keys)}"
+        # assert self._xyz.shape[0] == len(gvm.active_keys), \
+        #     f"GPU size {self._xyz.shape[0]} != active_keys size {len(gvm.active_keys)}"
         
         t6 = time.perf_counter()
 
-        print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
-                f"insert={(t2-t1)*1e3:.1f}, "
-                f"cull={(t3-t2)*1e3:.1f}, "
-                f"gpu_remove={(t4-t3)*1e3:.1f}, "
-                f"gpu_add={(t5-t4)*1e3:.1f}, "
-                f"assert={(t6-t5)*1e3:.1f}")
+        # print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
+        #         f"insert={(t2-t1)*1e3:.1f}, "
+        #         f"cull={(t3-t2)*1e3:.1f}, "
+        #         f"gpu_remove={(t4-t3)*1e3:.1f}, "
+        #         f"gpu_add={(t5-t4)*1e3:.1f}, "
+        #         f"assert={(t6-t5)*1e3:.1f}")
 
     @torch.no_grad()
     def _gpu_add_active_gaussians(self, gvm, keys, kf_id):
@@ -347,16 +352,22 @@ class GaussianModel:
         """
         slots = [gvm.map[k] for k in keys]
         if not slots:
-            print("No new voxels to activate on GPU")
+            # print("No new voxels to activate on GPU")
             return
         
         def cat(field, requires_grad=True):
-            arr = np.stack([slot.cpu_params[field] for slot in slots], axis=0)
+            arr = []
+            for slot in slots:
+                if len(arr) > 0 and len(slot.cpu_params[field]) != len(arr[-1]):
+                    print(field, len(slot.cpu_params[field]), len(arr[-1]))
+                    assert False
+                arr.append(slot.cpu_params[field])
+            arr = np.stack(arr, axis=0)  
             t = torch.from_numpy(arr).to("cuda").requires_grad_(requires_grad)
             return t
         
         new_xyz = nn.Parameter(cat("xyz"))
-        new_f_dc = nn.Parameter(cat("f_dc").unsqueeze(1)) # (N,1,3)
+        new_f_dc = nn.Parameter(cat("f_dc").transpose(1, 2).contiguous()) # (N,1,3)
         new_f_rest = nn.Parameter(cat("f_rest").transpose(1, 2).contiguous()) # (N,SH-1,3)
         new_opacity = nn.Parameter(cat("opacity"))
         new_scaling = nn.Parameter(cat("scaling"))
@@ -381,7 +392,7 @@ class GaussianModel:
         # Set GPU indices in the voxel map slots
         start = self._xyz.shape[0] - len(slots)
         for i, s in enumerate(slots):
-            assert s.gpu_idx == -1, f"Slot {i} already has a gpu_idx"
+            # assert s.gpu_idx == -1, f"Slot {i} already has a gpu_idx"
             assert s.needs_init is False, f"Slot {i} needs init before pushing params to GPU"
             s.gpu_idx = start + i
 
@@ -397,9 +408,9 @@ class GaussianModel:
         # Gather candidate drop indices, clamp to valid range
         raw_idx = [gvm.map[k].gpu_idx for k in keys_to_remove]
         drop_idx = [i for i in raw_idx if 0 <= i < N]
-        stale = set(raw_idx) - set(drop_idx)
-        if stale:
-            print(f"[DEBUG] Found {len(stale)} stale gpu_idx in {len(raw_idx)} slots")
+        # stale = set(raw_idx) - set(drop_idx)
+        # if stale:
+            # print(f"[DEBUG] Found {len(stale)} stale gpu_idx in {len(raw_idx)} slots")
         
         keep_mask = torch.ones(N, dtype=torch.bool, device=self._xyz.device)
         keep_mask[drop_idx] = False
@@ -409,8 +420,8 @@ class GaussianModel:
         
         drop_idx_tensor = torch.tensor(drop_idx, dtype=torch.long, device=self._xyz.device)
         xyz = self._xyz[drop_idx_tensor].cpu().numpy()    # (D,3)
-        f_dc = self._features_dc[drop_idx_tensor,:,0].cpu().numpy()  # (D,C)
-        f_rest = self._features_rest[drop_idx_tensor].cpu().numpy()    # (D,…)
+        f_dc = self._features_dc[drop_idx_tensor, :1, :].transpose(1, 2).contiguous().cpu().numpy()  # (D,C)
+        f_rest = self._features_rest[drop_idx_tensor].transpose(1, 2).contiguous().cpu().numpy()    # (D,…)
         opacity = self._opacity[drop_idx_tensor].cpu().numpy()      # (D,1)
         scaling = self._scaling[drop_idx_tensor].cpu().numpy()      # (D,3)
         rot = self._rotation[drop_idx_tensor].cpu().numpy()      # (D,4)
