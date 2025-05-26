@@ -273,10 +273,6 @@ class GSBackEnd(mp.Process):
                 #         self.size_threshold,
                 #     )
 
-                # print_gpu_mem('Before prune')
-                # TODO ADD MODIFIED PRUNE LOGIC HERE, optimize only points in view
-                # print_gpu_mem('After prune')
-
                 self.gaussian_reset = 501
                 if (self.iteration_count % self.gaussian_reset) == 0 and (not update_gaussian):
                     Log("Resetting the opacity of non-visible Gaussians")

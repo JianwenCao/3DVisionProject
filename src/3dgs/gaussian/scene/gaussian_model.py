@@ -448,8 +448,11 @@ class GaussianModel:
             slot.gpu_idx = new
             if new < 0:
                 stale_count += 1 
-        print(f"[WARNING] Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots")
-
+        if stale_count > 0:
+            raise ValueError(
+                f"Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots"
+            )
+            
         gvm.active_keys.difference_update(keys_to_remove)
 
 

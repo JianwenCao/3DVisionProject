@@ -1,8 +1,8 @@
 # config.yaml
 opt_params:
   pose_lr: 0.0001
-  position_lr_init: 0.0007
-  position_lr_final: 0.0000016
+  position_lr_init: 0. # 0.0007
+  position_lr_final: 0. # 0.0000016
   position_lr_max_steps: 2000
   feature_lr: 0.0025
   opacity_lr: 0.1
