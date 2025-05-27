@@ -192,7 +192,7 @@ class GlobalVoxelMap:
         to_add = list(visible_new - old_active)
 
         print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
-              f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
+              f"visible_new: {len(visible_new)}/{len(new_keys if new_keys is not None else [])}")
         print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
 
         return to_add, to_remove
