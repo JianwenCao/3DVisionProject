@@ -140,7 +140,10 @@ class GaussianModel:
 
     def create_pcd_from_lidar_points(self, cam_info, xyz, rgb, init=False):
         # Spatial hash root voxel size in meters
-        voxel_size = self.config["Mapping"].get("voxel_size", 0.1)
+        if init:
+            voxel_size = self.config["Mapping"].get("voxel_size_init", 0.4)  # Root voxel size in meters
+        else:
+            voxel_size = self.config["Mapping"].get("voxel_size", 0.5)  # Root voxel size in meters
 
         cloud = mrnp.pointCloudFromPoints(xyz)
         settings = mr.TriangulationHelpersSettings()
