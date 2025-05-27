@@ -76,10 +76,9 @@ class GlobalVoxelMap:
         For incoming point cloud and initialized parameters, insert into voxel
         map iff the voxel is empty or underfilled.
 
-        Return: list of voxel-keys that were initialized in the map.
+        Return: list of all incoming scan voxels for frustum culling, after underfilled voxels initialized.
         """
         # Find voxels that are not full (mask_np)
-        pts_np = fused_point_cloud.cpu().numpy() # (M,3)
         default_slot = GlobalVoxelSlot()
         counts = np.fromiter(
             (self.map.get(tuple(k), default_slot).count
@@ -96,7 +95,6 @@ class GlobalVoxelMap:
         opac_cpu    = opacities.detach().cpu().numpy()  # (M,1)
         norms_cpu   = normals.detach().cpu().numpy()  # (M,3)
         
-        keys_to_init: List[Tuple[int,int,int]] = []
         for i, keep in enumerate(mask_np):
             if not keep:
                 continue
@@ -112,6 +110,7 @@ class GlobalVoxelMap:
             
             slot.cpu_params["xyz"] = xyz_cpu[i]
             slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
+            slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
             slot.cpu_params["f_rest"] = feats_cpu[i, :, 1:]
             slot.cpu_params["scaling"] = scales_cpu[i]
             slot.cpu_params["rotation"] = rots_cpu[i]
@@ -120,8 +119,7 @@ class GlobalVoxelMap:
 
             slot.count += 1
             slot.needs_init = False
-            keys_to_init.append(key)
-        return keys_to_init
+        return
 
     def cull_and_diff_active_voxels(
         self,
@@ -132,7 +130,7 @@ class GlobalVoxelMap:
         Update the active voxel set by culling in camera space.
 
         cam_info: current frame Camera obj
-        new_keys: list of voxel‐keys inserted this frame
+        new_keys: list of all voxel‐keys of incoming scan
         Returns (to_add, to_remove)
         """
         vs, he = self.voxel_size, self.voxel_size * 0.5
@@ -166,28 +164,28 @@ class GlobalVoxelMap:
 
         # 1) Cull existing active voxels
         if old_active:
-            old_centers    = compute_centers(old_active)
-            mask_old       = camera_cull(old_centers)
+            old_centers = compute_centers(old_active)
+            mask_old = camera_cull(old_centers)
             visible_active = {k for k, v in zip(old_active, mask_old) if v}
         else:
             visible_active = set()
 
         # 2) Cull newly inserted voxels
-        if new_keys:
-            new_set     = set(new_keys)
+        new_set = {tuple(v) for v in new_keys} if (len(new_keys)) else set()
+        if new_set:
             new_centers = compute_centers(new_set)
-            mask_new    = camera_cull(new_centers)
+            mask_new = camera_cull(new_centers)
             visible_new = {k for k, v in zip(new_set, mask_new) if v}
         else:
             visible_new = set()
 
         # 3) Fallback on very first frame: if nothing would be visible, just add all
-        if not old_active and new_keys and not visible_new:
-            visible_new = set(new_keys)
+        if not old_active and new_set and not visible_new:
+            visible_new = new_set
 
         # 4) Figure out exactly which to add / remove
         to_remove = list(old_active - visible_active)
-        to_add    = list(visible_new - old_active)
+        to_add = list(visible_new - old_active)
 
         # print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
         #       f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
