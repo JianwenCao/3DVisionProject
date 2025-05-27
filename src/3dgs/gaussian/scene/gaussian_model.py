@@ -312,7 +312,7 @@ class GaussianModel:
         
         # Get keys to add/remove from GPU
         to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, incoming_keys)
-        
+        print(f"current gaussians: {len(self._xyz)}, compared to last frame: + {len(to_add)} / - {len(to_remove)}")
         t3 = time.perf_counter()
 
         if to_remove:
@@ -340,12 +340,12 @@ class GaussianModel:
         
         t6 = time.perf_counter()
 
-        # print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
-        #         f"insert={(t2-t1)*1e3:.1f}, "
-        #         f"cull={(t3-t2)*1e3:.1f}, "
-        #         f"gpu_remove={(t4-t3)*1e3:.1f}, "
-        #         f"gpu_add={(t5-t4)*1e3:.1f}, "
-        #         f"assert={(t6-t5)*1e3:.1f}")
+        print(f"Timing (ms): gen={(t1-t0)*1e3:.1f}, "
+                f"insert={(t2-t1)*1e3:.1f}, "
+                f"cull={(t3-t2)*1e3:.1f}, "
+                f"gpu_remove={(t4-t3)*1e3:.1f}, "
+                f"gpu_add={(t5-t4)*1e3:.1f}, "
+                f"assert={(t6-t5)*1e3:.1f}")
 
     @torch.no_grad()
     def _gpu_add_active_gaussians(self, gvm, keys, kf_id):

@@ -14,7 +14,7 @@ opt_params:
   exposure_lr: 0.01
 
 Training:
-  init_itr_num: 10
+  init_itr_num: 3000
   init_gaussian_update: 100
   init_gaussian_reset: 500
   init_gaussian_th: 0.005
@@ -32,33 +32,8 @@ Training:
   max_steps: 15000
   rotation_init: True
   lambda_normal: 0.
-  compensate_exposure: true
-
-Tracking:
-  motion_filter:
-    thresh: 2.4
-    skip_blur: False
-  frontend:
-    keyframe_thresh: 4.0
-    frontend_thresh: 16.0
-    frontend_window: 25
-    frontend_radius: 2
-    frontend_nms: 1
-    mono_depth_alpha: 0.001
-  backend:
-    backend_thresh: 22.0
-    backend_radius: 2
-    backend_nms: 3
-    covis_thresh: 0.2
-  pgba:
-    active: False
-    pgba_thresh: 22.0
-  voxel_size: 0.5
-  max_layer: 2
-  max_points_num: 50
-  layer_init_num: [ 5, 5, 5, 5, 5 ]
 
 Mapping:
-  voxel_size: 0.03
+  voxel_size: 0.05
   max_points_per_voxel: 1
   max_active_gaussians: 20000 # Matches GS-LIVO indoor experiments
