@@ -293,18 +293,18 @@ class GaussianModel:
 
         t0 = time.perf_counter()
 
-        fused_point_cloud, features, scales, rots, opacities, normals, keys = (
+        fused_point_cloud, features, scales, rots, opacities, normals, incoming_keys = (
             self.create_pcd_from_lidar_points(cam_info, xyz, rgb, init)
         )
 
         t1 = time.perf_counter()
 
-        keys_to_init = gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals, keys) # TODO Set gaussian params per point here?
+        gvm.insert_gaussians(fused_point_cloud, features, scales, rots, opacities, normals, incoming_keys) # TODO Set gaussian params per point here?
         
         t2 = time.perf_counter()
         
         # Get keys to add/remove from GPU
-        to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, keys_to_init)
+        to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, incoming_keys)
         
         t3 = time.perf_counter()
 
@@ -356,7 +356,7 @@ class GaussianModel:
             return t
         
         new_xyz = nn.Parameter(cat("xyz"))
-        new_f_dc = nn.Parameter(cat("f_dc").unsqueeze(1)) # (N,1,3)
+        new_f_dc = nn.Parameter(cat("f_dc").transpose(1, 2).contiguous()) # (N,1,3)
         new_f_rest = nn.Parameter(cat("f_rest").transpose(1, 2).contiguous()) # (N,SH-1,3)
         new_opacity = nn.Parameter(cat("opacity"))
         new_scaling = nn.Parameter(cat("scaling"))
@@ -408,25 +408,25 @@ class GaussianModel:
                    if 0 <= gvm.map[k].gpu_idx < N}
         
         drop_idx_tensor = torch.tensor(drop_idx, dtype=torch.long, device=self._xyz.device)
-        xyz = self._xyz[drop_idx_tensor].cpu().numpy()    # (D,3)
-        f_dc = self._features_dc[drop_idx_tensor,:,0].cpu().numpy()  # (D,C)
-        f_rest = self._features_rest[drop_idx_tensor].cpu().numpy()    # (D,…)
-        opacity = self._opacity[drop_idx_tensor].cpu().numpy()      # (D,1)
-        scaling = self._scaling[drop_idx_tensor].cpu().numpy()      # (D,3)
-        rot = self._rotation[drop_idx_tensor].cpu().numpy()      # (D,4)
-        normals = self.normals[drop_idx_tensor].cpu().numpy()      # (D,3)
+        xyz = self._xyz[drop_idx_tensor].cpu().numpy() # (D,3)
+        f_dc = self._features_dc[drop_idx_tensor, :1, :].transpose(1,2).contiguous().cpu().numpy() # (D,C)
+        f_rest = self._features_rest[drop_idx_tensor].transpose(1,2).contiguous().cpu().numpy() # (D,…)
+        opacity = self._opacity[drop_idx_tensor].cpu().numpy() # (D,1)
+        scaling = self._scaling[drop_idx_tensor].cpu().numpy() # (D,3)
+        rot = self._rotation[drop_idx_tensor].cpu().numpy() # (D,4)
+        normals = self.normals[drop_idx_tensor].cpu().numpy() # (D,3)
 
         for i, idx in enumerate(drop_idx):
             key = idx2key[idx]
             # Write params to CPU and mark "not on GPU"
             gvm.cuda_params_to_voxel(key, {
-                "xyz":     xyz[i],
-                "f_dc":    f_dc[i],
-                "f_rest":  f_rest[i],
+                "xyz": xyz[i],
+                "f_dc": f_dc[i],
+                "f_rest": f_rest[i],
                 "opacity": opacity[i],
                 "scaling": scaling[i],
-                "rotation":rot[i],
-                "normals":normals[i],
+                "rotation": rot[i],
+                "normals": normals[i],
             })
             gvm.map[key].gpu_idx = -1
         
