@@ -1,0 +1,59 @@
+# config.yaml
+opt_params:
+  pose_lr: 0.0001
+  position_lr_init: 0.00016
+  position_lr_final: 0.0000016
+  position_lr_max_steps: 2000
+  feature_lr: 0.0025
+  opacity_lr: 0.05
+  scaling_lr: 0.001
+  rotation_lr: 0.001
+  percent_dense: 0.01
+  lambda_dssim: 0.2
+  densify_grad_threshold: 0.0002
+  exposure_lr: 0.01  # 添加曝光调整的学习率（如果使用 compensate_exposure）
+
+Training:
+  init_itr_num: 1500
+  init_gaussian_update: 150
+  init_gaussian_reset: 400
+  init_gaussian_th: 0.002
+  init_gaussian_extent: 50
+  gaussian_update_every: 120
+  gaussian_update_offset: 50
+  gaussian_th: 0.6
+  gaussian_extent: 3.0
+  gaussian_reset: 1200
+  size_threshold: 10
+  window_size: 10
+  rgb_boundary_threshold: 0.03
+  compensate_exposure: true  # 可选改为 true 以支持曝光调整
+  monocular: false
+  max_steps: 15000  # 添加最大迭代步数，用于颜色精炼
+
+Dataset:
+  pcd_downsample: 128
+  pcd_downsample_init: 64
+  point_size: 0.1
+  adaptive_pointsize: true
+
+
+Tracking:
+  motion_filter:
+    thresh: 2.4
+    skip_blur: False
+  frontend:
+    keyframe_thresh: 4.0
+    frontend_thresh: 16.0
+    frontend_window: 25
+    frontend_radius: 2
+    frontend_nms: 1
+    mono_depth_alpha: 0.001
+  backend:
+    backend_thresh: 22.0
+    backend_radius: 2
+    backend_nms: 3
+    covis_thresh: 0.2
+  pgba:
+    active: False
+    pgba_thresh: 22.0

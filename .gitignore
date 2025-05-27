@@ -3,3 +3,9 @@ devel/
 logs/
 src/Sophus/build/
 .catkin_tools/profiles/default
+/src/3dgs/output/
+.idea
+
+src/HI-SLAM2/data/
+*.pt
+__pycache__/
