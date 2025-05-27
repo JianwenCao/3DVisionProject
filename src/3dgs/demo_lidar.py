@@ -172,7 +172,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--dataset", "-d",
-        default="/data/storage/jianwen/CBD_01_VIO",
+        default="../../dataset/CBD_01_full_VIO",
         help="Path to local dataset w.r.t to the current working directory."
     )
     parser.add_argument(
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--num_frames", "-n", type=int,
-        default=1181,
+        default=100,
         help="Number of frames to process."
     )
     args = parser.parse_args()
@@ -193,7 +193,7 @@ if __name__ == '__main__':
 
     queue = mp.Queue(maxsize=8)
     config = load_config(config_path)
-    gs = GSBackEnd(config, save_dir="./output", use_gui=False)
+    gs = GSBackEnd(config, save_dir="./output", use_gui=True)
 
     coordinate_transform = torch.tensor([
         [1, 0, 0, 0],  # -y_fast = x_gs
@@ -223,11 +223,11 @@ if __name__ == '__main__':
             keyframes = torch.load("keyframes.pt", weights_only=True, map_location="cpu")
             print("Number of frames in keyframes:", len(keyframes["tstamp"]))
             print(keyframes["tstamp"])
-
-            gs.process_track_data(keyframes)
+            gs.gaussians.handle_final_frame()
+            # gs.gaussians.reset_parameters()
             gs.gaussians.move_gvm_to_gpu(kf_id=keyframes['tstamp'][-1].item())
             gs.finalize()
-            
+
             gs.eval_rendering(gtimages={index: tensor for index, tensor in enumerate(whole_data["images"].cuda())}, gtdepthdir=None, traj=whole_data["w2c"].cuda(), kf_idx=keyframes["tstamp"])
             break
 

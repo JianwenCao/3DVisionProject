@@ -289,7 +289,6 @@ class GaussianModel:
     def move_gvm_to_gpu(self, kf_id):
         self._gpu_add_active_gaussians(self.global_voxel_map, list(self.global_voxel_map.map.keys()), kf_id)
         
-
     def extend_from_lidar_seq(
             self, cam_info, kf_id=-1, init=False, pcd=None
     ):
@@ -828,3 +827,39 @@ class GaussianModel:
             viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
         )
         self.denom[update_filter] += 1
+
+    def handle_final_frame(self):
+        return self._gpu_remove_inactive_gaussians(self.global_voxel_map, self.global_voxel_map.active_keys)
+
+    def reset_parameters(self):
+        """
+        Empties all Gaussian parameters, optimizer state, and related attributes.
+        Resets the model to an initial empty state while preserving configuration.
+        """
+        # Reset core parameter tensors to empty
+        self._xyz = torch.empty(0, device="cuda")
+        self._features_dc = torch.empty(0, device="cuda")
+        self._features_rest = torch.empty(0, device="cuda")
+        self._scaling = torch.empty(0, device="cuda")
+        self._rotation = torch.empty(0, device="cuda")
+        self._opacity = torch.empty(0, device="cuda")
+        self.normals = torch.empty(0, 3, device="cuda")
+
+        # Reset auxiliary tensors
+        self.xyz_gradient_accum = torch.empty(0, device="cuda")
+        self.denom = torch.empty(0, device="cuda")
+        self.max_radii2D = torch.empty(0, device="cuda")
+        self.unique_kfIDs = torch.empty(0, device="cuda").int()
+        self.n_obs = torch.empty(0, device="cuda").int()
+
+        # Clear optimizer state
+        if self.optimizer is not None:
+            self.optimizer.state.clear()
+            self.optimizer.param_groups.clear()
+            self.optimizer = None
+
+        # Reset global voxel map (if desired)
+        self.global_voxel_map = GlobalVoxelMap(self.config)
+
+        # Reset active SH degree (optional, depending on your use case)
+        self.active_sh_degree = 0
