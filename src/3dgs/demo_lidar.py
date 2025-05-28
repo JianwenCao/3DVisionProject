@@ -172,7 +172,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--dataset", "-d",
-        default="../../dataset/CBD_01_full_VIO",
+        default="/data/storage/jianwen/CBD_01_VIO",
         help="Path to local dataset w.r.t to the current working directory."
     )
     parser.add_argument(
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--num_frames", "-n", type=int,
-        default=100,
+        default=1181,
         help="Number of frames to process."
     )
     args = parser.parse_args()
@@ -193,7 +193,7 @@ if __name__ == '__main__':
 
     queue = mp.Queue(maxsize=8)
     config = load_config(config_path)
-    gs = GSBackEnd(config, save_dir="./output", use_gui=True)
+    gs = GSBackEnd(config, save_dir="./output", use_gui=False)
 
     coordinate_transform = torch.tensor([
         [1, 0, 0, 0],  # -y_fast = x_gs
