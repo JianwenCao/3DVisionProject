@@ -98,7 +98,7 @@ def data_loader(queue, num_frames, dataset_path, coordinate_transform, intrinsic
             lidar_in_camera = (w2c[:3, :3] @ transformed_lidar_points[:, :3].T + w2c[:3, 3:]).T
             theta = torch.acos((torch.trace(R_rel) - 1) / 2)
             ratio = distance / lidar_in_camera[:, -1].mean()
-            if theta > 0. or ratio > 0.:
+            if theta > 0.1 or ratio > 0.1:
                 keyframes["images"].append(image)
                 keyframes["poses"].append(pose)
                 keyframes["intrinsics"].append(intrinsics)
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--num_frames", "-n", type=int,
-        default=100,
+        default=1181,
         help="Number of frames to process."
     )
     args = parser.parse_args()
@@ -193,7 +193,7 @@ if __name__ == '__main__':
 
     queue = mp.Queue(maxsize=8)
     config = load_config(config_path)
-    gs = GSBackEnd(config, save_dir="./output", use_gui=True)
+    gs = GSBackEnd(config, save_dir="./output", use_gui=False)
 
     coordinate_transform = torch.tensor([
         [1, 0, 0, 0],  # -y_fast = x_gs
@@ -224,10 +224,8 @@ if __name__ == '__main__':
             print("Number of frames in keyframes:", len(keyframes["tstamp"]))
             print(keyframes["tstamp"])
             gs.gaussians.handle_final_frame()
-            # gs.gaussians.reset_parameters()
             gs.gaussians.move_gvm_to_gpu(kf_id=keyframes['tstamp'][-1].item())
             gs.finalize()
-
             gs.eval_rendering(gtimages={index: tensor for index, tensor in enumerate(whole_data["images"].cuda())}, gtdepthdir=None, traj=whole_data["w2c"].cuda(), kf_idx=keyframes["tstamp"])
             break
 

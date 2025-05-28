@@ -1,11 +1,9 @@
 import numpy as np
 from typing import List, Dict, Set, Tuple, Optional
 import torch
+from torch import nn
 
 from gaussian.utils.camera_utils import Camera
-
-def voxel_key_from_xyz(xyz: np.ndarray, voxel_size: float) -> tuple:
-    return tuple((xyz // voxel_size).astype(int))
 
 GAUSS_FIELDS = ("xyz", "f_dc", "f_rest", "opacity", "scaling", "rotation", "normals")
 
@@ -94,7 +92,7 @@ class GlobalVoxelMap:
         rots_cpu    = rots.detach().cpu().numpy()  # (M,4) or (M,3,3)
         opac_cpu    = opacities.detach().cpu().numpy()  # (M,1)
         norms_cpu   = normals.detach().cpu().numpy()  # (M,3)
-        
+
         for i, keep in enumerate(mask_np):
             if not keep:
                 continue
@@ -109,8 +107,7 @@ class GlobalVoxelMap:
                 continue
             
             slot.cpu_params["xyz"] = xyz_cpu[i]
-            slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
-            slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
+            slot.cpu_params["f_dc"] = feats_cpu[i, :, 0:1]
             slot.cpu_params["f_rest"] = feats_cpu[i, :, 1:]
             slot.cpu_params["scaling"] = scales_cpu[i]
             slot.cpu_params["rotation"] = rots_cpu[i]

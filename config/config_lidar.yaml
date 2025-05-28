@@ -1,8 +1,8 @@
 # config.yaml
 opt_params:
   pose_lr: 0.0001
-  position_lr_init: 0. # 0.0007
-  position_lr_final: 0. # 0.0000016
+  position_lr_init: 0.00016 # 0.0007
+  position_lr_final: 0.0000016 # 0.0000016
   position_lr_max_steps: 2000
   feature_lr: 0.0025
   opacity_lr: 0.1
@@ -14,7 +14,7 @@ opt_params:
   exposure_lr: 0.01
 
 Training:
-  init_itr_num: 3000
+  init_itr_num: 1050
   init_gaussian_update: 100
   init_gaussian_reset: 500
   init_gaussian_th: 0.005
@@ -31,9 +31,9 @@ Training:
   monocular: false
   max_steps: 15000
   rotation_init: True
-  lambda_normal: 0.
+  lambda_normal: 0.1
 
 Mapping:
-  voxel_size: 0.05
+  voxel_size: 0.03
   max_points_per_voxel: 1
-  max_active_gaussians: 20000 # Matches GS-LIVO indoor experiments
+  max_active_gaussians: 100000 # Matches GS-LIVO indoor experiments
