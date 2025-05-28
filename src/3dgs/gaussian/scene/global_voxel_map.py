@@ -140,41 +140,39 @@ class GlobalVoxelMap:
         # helper: world‐space centers of a set of keys
         def compute_centers(keys):
             arr = np.array(list(keys), dtype=np.int32)
-            return arr.astype(np.float32) * vs + he
+            return arr, arr.astype(np.float32) * vs + he
 
-        def camera_cull(centers_w, cam):
-            R = cam.R.cpu().numpy()
-            T = cam.T.cpu().numpy()
-            fx = float(cam.fx)
-            fy = float(cam.fy)
-            cx = float(cam.cx)
-            cy = float(cam.cy)
-            W = int(cam.image_width)
-            H = int(cam.image_height)
-
-            p_cam = centers_w @ R.T + T[None, :]
-            x, y, z = p_cam[:, 0], p_cam[:, 1], p_cam[:, 2]
-            u = x * fx / z + cx
-            v = y * fy / z + cy
-            return (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        # Process all camera at once
+        def camera_cull(centers_w, cameras):
+            centers_w_torch = torch.from_numpy(centers_w).float().to('cuda')
+            visible = torch.zeros(len(centers_w), dtype=torch.bool, device='cuda')
+            for cam in cameras:
+                R = cam.R.to(dtype=torch.float32)
+                T = cam.T.to(dtype=torch.float32)
+                fx, fy, cx, cy = float(cam.fx), float(cam.fy), float(cam.cx), float(cam.cy)
+                W, H = int(cam.image_width), int(cam.image_height)
+                p_cam = centers_w_torch @ R.T + T[None, :]
+                x, y, z = p_cam[:, 0], p_cam[:, 1], p_cam[:, 2]
+                u = x * fx / z + cx
+                v = y * fy / z + cy
+                visible |= (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+            return visible.cpu().numpy()
 
         # 1) Cull existing active voxels
         visible_active = set()
         if old_active:
-            old_centers = compute_centers(old_active)
-            for cam in self.camera_window:
-                mask_old = camera_cull(old_centers, cam)
-                visible_active.update({k for k, v in zip(old_active, mask_old) if v})
+            old_keys, old_centers = compute_centers(old_active)
+            mask_old = camera_cull(old_centers, self.camera_window)
+            visible_active = set(map(tuple, old_keys[mask_old]))
 
 
         # 2) Cull newly inserted voxels
         new_set = {tuple(v) for v in new_keys} if (len(new_keys)) else set()
         visible_new = set()
         if new_set:
-            new_centers = compute_centers(new_set)
-            for cam in self.camera_window:
-                mask_new = camera_cull(new_centers, cam)
-                visible_new.update({k for k, v in zip(new_set, mask_new) if v})
+            new_keys, new_centers = compute_centers(new_set)
+            mask_new = camera_cull(new_centers, self.camera_window)
+            visible_new = set(map(tuple, new_keys[mask_new]))
 
         # 3) Fallback on very first frame: if nothing would be visible, just add all
         if not old_active and new_set and not visible_new:
@@ -189,3 +187,73 @@ class GlobalVoxelMap:
         # print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
 
         return to_add, to_remove
+
+    # Original version
+    # def cull_and_diff_active_voxels(
+    #     self,
+    #     cam_info: Camera,
+    #     new_keys: Optional[List[Tuple[int, int, int]]] = None
+    # ) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
+    #     """
+    #     Update the active voxel set by culling in camera space.
+    #
+    #     cam_info: current frame Camera obj
+    #     new_keys: list of all voxel‐keys of incoming scan
+    #     Returns (to_add, to_remove)
+    #     """
+    #     self.camera_window.append(cam_info)
+    #     vs, he = self.voxel_size, self.voxel_size * 0.5
+    #     old_active = set(self.active_keys)
+    #
+    #     # helper: world‐space centers of a set of keys
+    #     def compute_centers(keys):
+    #         arr = np.array(list(keys), dtype=np.int32)
+    #         return arr.astype(np.float32) * vs + he
+    #
+    #     def camera_cull(centers_w, cam):
+    #         R = cam.R.cpu().numpy()
+    #         T = cam.T.cpu().numpy()
+    #         fx = float(cam.fx)
+    #         fy = float(cam.fy)
+    #         cx = float(cam.cx)
+    #         cy = float(cam.cy)
+    #         W = int(cam.image_width)
+    #         H = int(cam.image_height)
+    #
+    #         p_cam = centers_w @ R.T + T[None, :]
+    #         x, y, z = p_cam[:, 0], p_cam[:, 1], p_cam[:, 2]
+    #         u = x * fx / z + cx
+    #         v = y * fy / z + cy
+    #         return (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    #
+    #     # 1) Cull existing active voxels
+    #     visible_active = set()
+    #     if old_active:
+    #         old_centers = compute_centers(old_active)
+    #         for cam in self.camera_window:
+    #             mask_old = camera_cull(old_centers, cam)
+    #             visible_active.update({k for k, v in zip(old_active, mask_old) if v})
+    #
+    #
+    #     # 2) Cull newly inserted voxels
+    #     new_set = {tuple(v) for v in new_keys} if (len(new_keys)) else set()
+    #     visible_new = set()
+    #     if new_set:
+    #         new_centers = compute_centers(new_set)
+    #         for cam in self.camera_window:
+    #             mask_new = camera_cull(new_centers, cam)
+    #             visible_new.update({k for k, v in zip(new_set, mask_new) if v})
+    #
+    #     # 3) Fallback on very first frame: if nothing would be visible, just add all
+    #     if not old_active and new_set and not visible_new:
+    #         visible_new = new_set
+    #
+    #     # 4) Figure out exactly which to add / remove
+    #     to_remove = list(old_active - visible_active)
+    #     to_add = list(visible_new - old_active)
+    #
+    #     # print(f"[CAM-CULL] visible_old: {len(visible_active)}/{len(old_active)}, "
+    #     #       f"visible_new: {len(visible_new)}/{len(new_keys or [])}")
+    #     # print(f"[CAM-CULL] will add {len(to_add)}, remove {len(to_remove)}")
+    #
+    #     return to_add, to_remove
