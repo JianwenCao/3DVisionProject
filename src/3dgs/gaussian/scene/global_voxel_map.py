@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from typing import List, Dict, Set, Tuple, Optional
 import torch
@@ -41,10 +42,10 @@ class GlobalVoxelMap:
                 self.map[key] = [GaussianParam(xyz[i], f_dcs[i], f_rests[i], opacities[i], scales[i], rots[i], normals[i])]
 
     def update_active_keys(self, cam_info):
-        global_keys = torch.tensor(list(self.map.keys()), dtype=torch.float32, device="cuda")
+        global_keys = np.array(list(self.map.keys()), dtype=np.float32)
 
-        R = cam_info.R.to(torch.float32)
-        T = cam_info.T.to(torch.float32)
+        R = cam_info.R.cpu().numpy()
+        T = cam_info.T.cpu().numpy()
         fx = float(cam_info.fx);  fy = float(cam_info.fy)
         cx = float(cam_info.cx);  cy = float(cam_info.cy)
         W  = int(cam_info.image_width)
@@ -52,13 +53,13 @@ class GlobalVoxelMap:
         p_cam = global_keys @ R.T + T[None, :]
 
         z = p_cam[:, 2]
-        intrinsics = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device="cuda")
+        intrinsics = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
         p_cam = p_cam @ intrinsics.T  # Apply intrinsic matrix to convert to pixel coordinates
         p_cam = p_cam[:, :2] / p_cam[:, 2:3]  # Normalize by depth to get pixel coordinates
         u, v = p_cam[:, 0], p_cam[:, 1]
         visiable_mask = (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
         
-        current_active_keys = global_keys[visiable_mask].cpu().numpy().astype(np.int32)
+        current_active_keys = global_keys[visiable_mask]
         current_active_keys = set([tuple(key) for key in current_active_keys])
         global_keys = set([tuple(key) for key in global_keys])
 
