@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from gaussian.utils.camera_utils import Camera
+from collections import deque
 
 GAUSS_FIELDS = ("xyz", "f_dc", "f_rest", "opacity", "scaling", "rotation", "normals")
 
@@ -44,9 +45,11 @@ class GlobalVoxelMap:
         self.voxel_size: float = config["Mapping"].get("voxel_size", 0.1)
         self.max_points_per_voxel: int = config["Mapping"].get("max_points_per_voxel", 1)
         self.max_active_gaussians: int = config["Mapping"].get("max_active_gaussians", 20000) # TODO implement
+        self.window_size: int = config["Mapping"].get("window_size", 3)
 
         self.map: Dict[Tuple[int, int, int], GlobalVoxelSlot] = {}
         self.active_keys: Set[Tuple[int, int, int]] = set()
+        self.camera_window: deque = deque(maxlen=self.window_size)
 
     def cuda_params_to_voxel(self, key: Tuple[int,int,int], updated: dict) -> None:
         """
@@ -130,6 +133,7 @@ class GlobalVoxelMap:
         new_keys: list of all voxel‐keys of incoming scan
         Returns (to_add, to_remove)
         """
+        self.camera_window.append(cam_info)
         vs, he = self.voxel_size, self.voxel_size * 0.5
         old_active = set(self.active_keys)
 
@@ -138,43 +142,39 @@ class GlobalVoxelMap:
             arr = np.array(list(keys), dtype=np.int32)
             return arr.astype(np.float32) * vs + he
 
-        # extract camera parameters
-        R = cam_info.R.cpu().numpy()            # (3×3) world→camera rotation
-        T = cam_info.T.cpu().numpy()            # (3,)   world→camera translation
-        fx = float(cam_info.fx);  fy = float(cam_info.fy)
-        cx = float(cam_info.cx);  cy = float(cam_info.cy)
-        W  = int(cam_info.image_width)
-        H  = int(cam_info.image_height)
+        def camera_cull(centers_w, cam):
+            R = cam.R.cpu().numpy()
+            T = cam.T.cpu().numpy()
+            fx = float(cam.fx)
+            fy = float(cam.fy)
+            cx = float(cam.cx)
+            cy = float(cam.cy)
+            W = int(cam.image_width)
+            H = int(cam.image_height)
 
-        # camera‐space cull: positive z, and 0 ≤ u < W, 0 ≤ v < H
-        def camera_cull(centers_w):
-            # 1) transform to camera coords
-            #    p_cam = R @ p_world + T  → via (centers · R^T + T)
             p_cam = centers_w @ R.T + T[None, :]
-            x, y, z = p_cam[:,0], p_cam[:,1], p_cam[:,2]
-
-            # 2) project into pixel coords
+            x, y, z = p_cam[:, 0], p_cam[:, 1], p_cam[:, 2]
             u = x * fx / z + cx
             v = y * fy / z + cy
-
             return (z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
 
         # 1) Cull existing active voxels
+        visible_active = set()
         if old_active:
             old_centers = compute_centers(old_active)
-            mask_old = camera_cull(old_centers)
-            visible_active = {k for k, v in zip(old_active, mask_old) if v}
-        else:
-            visible_active = set()
+            for cam in self.camera_window:
+                mask_old = camera_cull(old_centers, cam)
+                visible_active.update({k for k, v in zip(old_active, mask_old) if v})
+
 
         # 2) Cull newly inserted voxels
         new_set = {tuple(v) for v in new_keys} if (len(new_keys)) else set()
+        visible_new = set()
         if new_set:
             new_centers = compute_centers(new_set)
-            mask_new = camera_cull(new_centers)
-            visible_new = {k for k, v in zip(new_set, mask_new) if v}
-        else:
-            visible_new = set()
+            for cam in self.camera_window:
+                mask_new = camera_cull(new_centers, cam)
+                visible_new.update({k for k, v in zip(new_set, mask_new) if v})
 
         # 3) Fallback on very first frame: if nothing would be visible, just add all
         if not old_active and new_set and not visible_new:
