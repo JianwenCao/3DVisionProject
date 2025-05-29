@@ -191,7 +191,7 @@ if __name__ == '__main__':
     dataset_path = args.dataset
     num_frames = args.num_frames
 
-    queue = mp.Queue(maxsize=8)
+    queue = mp.Queue(maxsize=10)
     config = load_config(config_path)
     gs = GSBackEnd(config, save_dir="./output", use_gui=False)
 

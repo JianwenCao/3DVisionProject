@@ -3,11 +3,9 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as R
 
-
 def to_se3_vec(pose_mat):
     quat = R.from_matrix(pose_mat[:3, :3]).as_quat()
     return np.hstack((pose_mat[:3, 3], quat))
-
 
 def skew_sym_mat(x):
     device = x.device
@@ -20,7 +18,6 @@ def skew_sym_mat(x):
     ssm[2, 0] = -x[1]
     ssm[2, 1] = x[0]
     return ssm
-
 
 def SO3_exp(theta):
     device = theta.device
@@ -39,7 +36,6 @@ def SO3_exp(theta):
             + ((1 - torch.cos(angle)) / (angle**2)) * W2
         )
 
-
 def V(theta):
     dtype = theta.dtype
     device = theta.device
@@ -57,7 +53,6 @@ def V(theta):
         )
     return V
 
-
 def SE3_exp(tau):
     dtype = tau.dtype
     device = tau.device
@@ -71,7 +66,6 @@ def SE3_exp(tau):
     T[:3, :3] = R
     T[:3, 3] = t
     return T
-
 
 def update_pose(camera):
     tau = torch.cat([camera.cam_trans_delta, camera.cam_rot_delta], axis=0)
@@ -88,38 +82,6 @@ def update_pose(camera):
     camera.update_RT(new_R, new_T)
     camera.cam_rot_delta.data.fill_(0)
     camera.cam_trans_delta.data.fill_(0)
-
-
-def depths_to_points(view, depthmap, world_frame):
-    W, H = view.image_width, view.image_height
-    fx = W / (2 * math.tan(view.FoVx / 2.))
-    fy = H / (2 * math.tan(view.FoVy / 2.))
-    intrins = torch.tensor([[fx, 0., W/2.], [0., fy, H/2.], [0., 0., 1.0]]).float().cuda()
-    grid_x, grid_y = torch.meshgrid(torch.arange(W, device='cuda').float() + 0.5, torch.arange(H, device='cuda').float() + 0.5, indexing='xy')
-    points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3)
-    if world_frame:
-        c2w = (view.world_view_transform.T).inverse()
-        rays_d = points @ intrins.inverse().T @ c2w[:3,:3].T
-        rays_o = c2w[:3,3]
-        points = depthmap.reshape(-1, 1) * rays_d + rays_o
-    else:
-        rays_d = points @ intrins.inverse().T
-        points = depthmap.reshape(-1, 1) * rays_d
-    return points
-
-
-def depth_to_normal(view, depth, world_frame=False):
-    """
-        view: view camera
-        depth: depthmap 
-    """
-    points = depths_to_points(view, depth, world_frame).reshape(*depth.shape[1:], 3)
-    normal_map = torch.zeros_like(points)
-    dx = torch.cat([points[2:, 1:-1] - points[:-2, 1:-1]], dim=0)
-    dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
-    normal_map[1:-1, 1:-1, :] = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
-    return normal_map, points
-
 
 def image_gradient(image):
     # Compute image gradient using Scharr Filter
@@ -140,7 +102,6 @@ def image_gradient(image):
     )
     return img_grad_v[0], img_grad_h[0]
 
-
 def image_gradient_mask(image, eps=0.01):
     # Compute image gradient mask
     c = image.shape[0]
@@ -157,7 +118,6 @@ def image_gradient_mask(image, eps=0.01):
 
     return img_grad_v[0] == torch.sum(conv_x), img_grad_h[0] == torch.sum(conv_y)
 
-
 def depth_reg(depth, gt_image, huber_eps=0.1, mask=None):
     mask_v, mask_h = image_gradient_mask(depth)
     gray_grad_v, gray_grad_h = image_gradient(gt_image.mean(dim=0, keepdim=True))
@@ -172,12 +132,10 @@ def depth_reg(depth, gt_image, huber_eps=0.1, mask=None):
     ).mean()
     return err
 
-
 def get_loss_tracking(config, image, depth, opacity, viewpoint, initialization=False):
     if config["Training"]["monocular"]:
         return get_loss_tracking_rgb(config, image, depth, opacity, viewpoint)
     return get_loss_tracking_rgbd(config, image, depth, opacity, viewpoint)
-
 
 def get_loss_tracking_rgb(config, image, depth, opacity, viewpoint):
     gt_image = viewpoint.original_image.cuda()
@@ -188,7 +146,6 @@ def get_loss_tracking_rgb(config, image, depth, opacity, viewpoint):
     rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask
     l1 = opacity * torch.abs(image * rgb_pixel_mask - gt_image * rgb_pixel_mask)
     return l1.mean()
-
 
 def get_loss_tracking_rgbd(
     config, image, depth, opacity, viewpoint, initialization=False
@@ -206,17 +163,6 @@ def get_loss_tracking_rgbd(
     l1_depth = torch.abs(depth * depth_mask - gt_depth * depth_mask)
     return alpha * l1_rgb + (1 - alpha) * l1_depth.mean()
 
-
-def get_loss_normal(depth_mean, viewpoint):
-    prior_normal = viewpoint.normal.cuda()
-    prior_normal = prior_normal.reshape(3, *depth_mean.shape[-2:]).permute(1,2,0)
-    prior_normal_normalized = torch.nn.functional.normalize(prior_normal, dim=-1)
-
-    normal_mean, _ = depth_to_normal(viewpoint, depth_mean, world_frame=False)
-    normal_error = 1 - (prior_normal_normalized * normal_mean).sum(dim=-1)
-    normal_error[prior_normal.norm(dim=-1) < 0.2] = 0
-    return normal_error.mean()
-
 @torch.no_grad()
 def quaternion_to_normal(quaternions):
     x, y, z, w = quaternions[:, 0], quaternions[:, 1], quaternions[:, 2], quaternions[:, 3]
@@ -231,7 +177,12 @@ def get_loss_lidar_normal(gaussians):
     rotation_quats = gaussians.get_rotation
     gauss_rots = quaternion_to_normal(rotation_quats)
     target_normals = gaussians.normals
-    
+    normal_magnitudes = torch.norm(target_normals, dim=-1)
+    valid_mask = normal_magnitudes > 1e-2
+    gauss_rots = gauss_rots[valid_mask]
+    target_normals = target_normals[valid_mask]
+    if gauss_rots.shape[0] == 0:
+        return torch.tensor(0.0, device=gauss_rots.device, requires_grad=True)
     cos_sim = torch.sum(gauss_rots * target_normals, dim=-1)
     cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
     normal_loss = 1.0 - cos_sim

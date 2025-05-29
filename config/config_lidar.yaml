@@ -11,7 +11,7 @@ opt_params:
   percent_dense: 0.01
   lambda_dssim: 0.2
   densify_grad_threshold: 0.0002
-  exposure_lr: 0.01
+  exposure_lr: 0.
 
 Training:
   init_itr_num: 1050
@@ -34,7 +34,8 @@ Training:
   lambda_normal: 0.1
 
 Mapping:
+  voxel_size_init: 0.03
   voxel_size: 0.03
-  max_points_per_voxel: 1
+  max_points_per_voxel: 5
   max_active_gaussians: 100000 # Matches GS-LIVO indoor experiments
-  window_size: 10 # Sliding window size for cull
+  window_size: 110 # Sliding window size for cull
