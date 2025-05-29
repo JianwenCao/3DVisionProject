@@ -310,14 +310,12 @@ class GaussianModel:
             return
 
         def cat(field, requires_grad=True):
-            arr = []
-            for slot in slots:
-                if len(arr) > 0 and len(slot.cpu_params[field]) != len(arr[-1]):
-                    print(field, len(slot.cpu_params[field]), len(arr[-1]))
-                    assert False
-                arr.append(slot.cpu_params[field])
-            arr = np.stack(arr, axis=0)
-            t = torch.from_numpy(arr).to("cuda").requires_grad_(requires_grad)
+            arrays = []
+            for s in slots:
+                arrays.extend(s.cpu_params[field])
+            arr = np.stack(arrays, axis=0)
+            t = torch.from_numpy(arr).to(device="cuda", dtype=torch.float32, non_blocking=True)
+            t.requires_grad_(requires_grad)
             return t
 
         new_xyz = nn.Parameter(cat("xyz"))
@@ -326,11 +324,10 @@ class GaussianModel:
         new_opacity = nn.Parameter(cat("opacity"))
         new_scaling = nn.Parameter(cat("scaling"))
         new_rot = nn.Parameter(cat("rotation"))
-        new_normals = torch.stack([torch.as_tensor(s.cpu_params["normals"],
-                                                   dtype=torch.float32, device="cuda")
-                                   for s in slots], dim=0)
+        new_normals = cat("normals", requires_grad=False)
 
         # Push onto optimizer
+        num_new = new_xyz.shape[0]
         self.densification_postfix(
             new_xyz,
             new_f_dc,
@@ -339,8 +336,8 @@ class GaussianModel:
             new_scaling,
             new_rot,
             new_normals,
-            new_kf_ids=torch.full((len(slots),), kf_id, dtype=torch.int32),
-            new_n_obs=torch.zeros((len(slots),), dtype=torch.int32),
+            new_kf_ids=torch.full((num_new,), kf_id, dtype=torch.int32),
+            new_n_obs=torch.zeros((num_new,), dtype=torch.int32),
         )
 
         # Set GPU indices in the voxel map slots
