@@ -13,29 +13,14 @@ class GlobalVoxelSlot:
     """
     Persistent storage for a single voxel's Gaussian parameters and occupancy.
     """
-    __slots__ = ('cpu_params', 'cuda_tensors', 'count', 'needs_init', 'gpu_idx')
+    __slots__ = ('cpu_params', 'count', 'needs_init', 'gpu_idx')
 
     def __init__(self):
         self.count = 0
         self.needs_init = True
         self.gpu_idx = -1
 
-        self.cpu_params = {k: None for k in GAUSS_FIELDS}
-        self.cuda_tensors = {k: torch.empty(0, device="cuda") for k in GAUSS_FIELDS}
-
-    def to_cuda_tuple(self):
-        """
-        Convert CPU gaussian params to tensor tuple for GPU.
-        """
-        out = []
-        for k in GAUSS_FIELDS:
-            if self.cpu_params[k] is None:
-                raise RuntimeError(f"GlobalVoxelSlot missing field {k} in cpu_params.")
-            t = torch.as_tensor(self.cpu_params[k], dtype=torch.float32, device="cuda")
-            t.requires_grad_(k != "normals") # normals not optimized, used for supervision
-            self.cuda_tensors[k] = t
-            out.append(t)
-        return tuple(out)
+        self.cpu_params = {k: [] for k in GAUSS_FIELDS}
 
 class GlobalVoxelMap:
     """
@@ -65,9 +50,9 @@ class GlobalVoxelMap:
                     raise ValueError(f"Field {k} in updated Gaussian parameters is None.")
                 # TODO figure out why mix of tensor and ndarray are passed
                 if torch.is_tensor(v):
-                    slot.cpu_params[k] = v.detach().cpu().numpy()
+                    slot.cpu_params[k] = [v.detach().cpu().numpy]
                 else:
-                    slot.cpu_params[k] = np.asarray(v, dtype=np.float32, order="C")
+                    slot.cpu_params[k] = [np.asarray(v, dtype=np.float32, order='C')]
         except (ValueError, AttributeError) as e:
             raise RuntimeError(f"Error updating voxel parameters: {e}")
 
@@ -108,14 +93,13 @@ class GlobalVoxelMap:
                 print(f"[WARN] insert_gaussians: voxel {key} already full (count={slot.count}). Redundant insert ignored.")
                 continue
             
-            slot.cpu_params["xyz"] = xyz_cpu[i]
-            slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
-            slot.cpu_params["f_dc"] = feats_cpu[i, :, :1]
-            slot.cpu_params["f_rest"] = feats_cpu[i, :, 1:]
-            slot.cpu_params["scaling"] = scales_cpu[i]
-            slot.cpu_params["rotation"] = rots_cpu[i]
-            slot.cpu_params["opacity"] = opac_cpu[i]
-            slot.cpu_params["normals"] = norms_cpu[i]
+            slot.cpu_params["xyz"].append(xyz_cpu[i])
+            slot.cpu_params["f_dc"].append(feats_cpu[i, :, :1])
+            slot.cpu_params["f_rest"].append(feats_cpu[i, :, 1:])
+            slot.cpu_params["scaling"].append(scales_cpu[i])
+            slot.cpu_params["rotation"].append(rots_cpu[i])
+            slot.cpu_params["opacity"].append(opac_cpu[i])
+            slot.cpu_params["normals"].append(norms_cpu[i])
 
             slot.count += 1
             slot.needs_init = False

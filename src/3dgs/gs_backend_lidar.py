@@ -131,10 +131,6 @@ class GSBackEnd(mp.Process):
             viewpoint, kf_id=frame_idx, init=init, pcd=lidar_points
         )
 
-        # if self.debug:
-        #     optimizer_state_size = sum(p.numel() * 4 for group in self.gaussians.optimizer.param_groups for p in group["params"])
-        #     print(f"Optimizer state size after extend_from_lidar_seq: {optimizer_state_size / 1024**3:.3f} GB")
-
     def reset(self):
         self.iteration_count = 0
         self.current_window = []
