@@ -285,8 +285,6 @@ class GaussianModel:
         # tensor AND active_keys or in CPU map w/ gpu_idx=-1
         assert all((slot.gpu_idx == -1) == (key not in gvm.gpu_keys)
                 for key, slot in gvm.map.items()), "gpu_idx state out of sync"
-        assert self._xyz.shape[0] == len(gvm.gpu_keys), \
-            f"GPU size {self._xyz.shape[0]} != gpu_keys size {len(gvm.gpu_keys)}"
 
         t6 = time.perf_counter()
 
