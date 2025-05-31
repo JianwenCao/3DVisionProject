@@ -264,7 +264,7 @@ class GaussianModel:
 
         # Get keys to add/remove from GPU
         to_add, to_remove = gvm.cull_and_diff_active_voxels(cam_info, incoming_keys)
-        print(f"current gaussians: {len(self._xyz)}, compared to last frame: + {len(to_add)} / - {len(to_remove)}")
+        print(f"gpu gaussians: {len(self._xyz)}, compared to last frame: + {len(to_add)} / - {len(to_remove)}")
         t3 = time.perf_counter()
 
         if to_remove:
@@ -283,12 +283,10 @@ class GaussianModel:
 
         # TODO remove later, assert gaussians live either in cuda
         # tensor AND active_keys or in CPU map w/ gpu_idx=-1
-        assert all(
-            (slot.gpu_idx == -1) == (key not in gvm.active_keys)
-            for key, slot in gvm.map.items()
-        ), "Inconsistent gpu_idx in slots"
-        # assert self._xyz.shape[0] == len(gvm.active_keys), \
-        #     f"GPU size {self._xyz.shape[0]} != active_keys size {len(gvm.active_keys)}"
+        assert all((slot.gpu_idx == -1) == (key not in gvm.gpu_keys)
+                for key, slot in gvm.map.items()), "gpu_idx state out of sync"
+        assert self._xyz.shape[0] == len(gvm.gpu_keys), \
+            f"GPU size {self._xyz.shape[0]} != gpu_keys size {len(gvm.gpu_keys)}"
 
         t6 = time.perf_counter()
 
@@ -347,7 +345,7 @@ class GaussianModel:
             assert s.needs_init is False, f"Slot {i} needs init before pushing params to GPU"
             s.gpu_idx = start + i
 
-        gvm.active_keys.update(keys)
+        gvm.gpu_keys.update(keys)
 
     @torch.no_grad()
     def _gpu_remove_inactive_gaussians(self, gvm, keys_to_remove):
@@ -396,7 +394,7 @@ class GaussianModel:
         self.prune_points(~keep_mask)
 
         # Re‐assign gpu_idx for the survivors
-        survivors = set(gvm.active_keys) - set(keys_to_remove)
+        survivors = set(gvm.gpu_keys) - set(keys_to_remove)
 
         # Compute new row indices for all survivors
         keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1).cpu().numpy()
@@ -412,10 +410,10 @@ class GaussianModel:
                 stale_count += 1
         if stale_count > 0:
             raise ValueError(
-                f"Found {stale_count} stale gpu_idx in {len(gvm.active_keys)} slots"
+                f"Found {stale_count} stale gpu_idx in {len(gvm.gpu_keys)} slots"
             )
 
-        gvm.active_keys.difference_update(keys_to_remove)
+        gvm.gpu_keys.difference_update(keys_to_remove)
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
