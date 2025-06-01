@@ -10,6 +10,7 @@ from util.utils import Log
 from gaussian.renderer import render
 from gaussian.utils.loss_utils import ssim, psnr
 from gaussian.utils.camera_utils import Camera
+import shutil
 
 
 def eval_rendering(
@@ -31,6 +32,14 @@ def eval_rendering(
     image_save_dir = f'{save_dir}/renders/image_{iteration}'
     depth_save_dir = f'{save_dir}/renders/depth_{iteration}'
     # vis_save_dir = f'{save_dir}/renders/vis_{iteration}'  
+
+    if os.path.exists(image_save_dir):
+        shutil.rmtree(image_save_dir)
+    if os.path.exists(depth_save_dir):
+        shutil.rmtree(depth_save_dir)
+    # if os.path.exists(vis_save_dir):
+    #     shutil.rmtree(vis_save_dir)
+
     os.makedirs(image_save_dir, exist_ok=True)
     os.makedirs(depth_save_dir, exist_ok=True)
     # os.makedirs(vis_save_dir, exist_ok=True)
@@ -54,7 +63,7 @@ def eval_rendering(
         pred = (image.detach().cpu().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
         pred = cv2.cvtColor(pred, cv2.COLOR_BGR2RGB)
         cv2.imwrite(f'{image_save_dir}/{idx:06d}.jpg', pred)
-        cv2.imwrite(f'{depth_save_dir}/{idx:06d}.png', np.clip(depth*6553.5, 0, 65535).astype(np.uint16))
+        cv2.imwrite(f'{depth_save_dir}/{idx:06d}.png', np.clip(depth*3276.75, 0, 65535).astype(np.uint16)) # 3276.75 mapping 20m to uint16
         # vis = np.concatenate((pred, cv2.imread(f'{save_dir}/renders/depth_{iteration}/{idx:06d}.png')), axis=0)
         # cv2.imwrite(f'{vis_save_dir}/{idx:06d}.jpg', vis)
 
