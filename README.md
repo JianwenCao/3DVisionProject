@@ -127,7 +127,7 @@ pip install torch-cluster transformers
 ### Run 3DGS with LiDAR Initialization
 ```bash
 cd /catkin_ws/src/3dgs
-python3 demo_lidar.py # Requires following parameters
+python3 demo.py # Requires following parameters
 ```
 #### Parameters:
 - `-c`: Path to the configuration file w.r.t cwd (e.g., `../../config/config_lidar.yaml`).
