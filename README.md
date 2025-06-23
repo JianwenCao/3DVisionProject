@@ -124,6 +124,9 @@ If you are not using this devcontainer, your env requires:
 pip install torch-cluster transformers
 ```
 
+### Dataset
+Download dataset and put under dataset folder. Dataset link: https://drive.google.com/file/d/1RiNzMUvheI54GInM1f4_L-cEXfBJ7-VO/view?usp=share_link
+
 ### Run 3DGS with LiDAR Initialization
 ```bash
 cd /catkin_ws/src/3dgs
